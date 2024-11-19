@@ -1,83 +1,94 @@
 import dash
-from dash import dcc, html
-from dash.dependencies import Input, Output
+from dash import dcc, html, Input, Output
 import pandas as pd
-import plotly.express as px
+from finvizfinance.quote import finvizfinance
+import plotly.graph_objs as go
+import logging
 
-# Sample StockData class for demonstration purposes
-class StockData:
-    def __init__(self, ticker):
-        self.ticker = ticker
-
-    def get_data_finviz(self):
-        # Simulate fetching data from Finviz
-        data = {
-            'Metric': ['Price', 'P/E', 'EPS (ttm)'],
-            'Value': [150.00, 25.00, 6.00]
-        }
-        return pd.DataFrame(data)
-
-    def get_data_manual(self):
-        # Simulate fetching manual data
-        data = {
-            'Metric': ['Dividend', 'Market Cap'],
-            'Value': [1.50, '2T']
-        }
-        return pd.DataFrame(data)
+# Configure logging
+logging.basicConfig(filename='stock_screener.log', level=logging.INFO, 
+                    format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Initialize the Dash app
 app = dash.Dash(__name__)
 
+# Define a list of tickers
+tickers = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'FB', 'NFLX', 'NVDA', 'BRK.B', 'JPM']
+
+# Define a list of time frames
+time_frames = [
+    {'label': '1 Minute', 'value': '1min'},
+    {'label': '5 Minutes', 'value': '5min'},
+    {'label': '15 Minutes', 'value': '15min'},
+    {'label': '1 Day', 'value': '1D'},
+    {'label': '1 Week', 'value': '1W'},
+    {'label': '1 Month', 'value': '1M'},
+    {'label': '1 Year', 'value': '1Y'},
+    {'label': '5 Years', 'value': '5Y'}
+]
+
 # Define the layout of the app
 app.layout = html.Div([
-    html.H1('Stock Dashboard'),
+    html.H1("Stock Screener Dashboard", style={'textAlign': 'center', 'color': '#333'}),
     dcc.Dropdown(
-        id='stock-ticker',
-        options=[{'label': ticker, 'value': ticker} for ticker in ['AAPL', 'TSLA']],
-        value='AAPL'
+        id='ticker-dropdown',
+        options=[{'label': ticker, 'value': ticker} for ticker in tickers],
+        value='AAPL',
+        style={'width': '50%', 'margin': 'auto'}
     ),
-    html.Div(id='stock-data')
-])
+    dcc.Dropdown(
+        id='timeframe-dropdown',
+        options=time_frames,
+        value='1D',
+        style={'width': '50%', 'margin': 'auto'}
+    ),
+    html.Div(id='output-data', style={'margin': '20px'}),
+    dcc.Graph(id='stock-graph', style={'height': '60vh'})
+], style={'backgroundColor': '#f8f9fa', 'padding': '20px'})
 
-# Define the callback to update stock data
+# Function to fetch stock data
+def fetch_data_for_ticker(ticker, timeframe):
+    stock_data = finvizfinance(ticker)
+    data = stock_data.ticker_fundament()
+    if data:
+        df = pd.DataFrame(data.items(), columns=['Metric', 'Value'])
+        df['Timeframe'] = timeframe
+        return df
+    return None
+
+# Callback to update the output data
 @app.callback(
-    Output('stock-data', 'children'),
-    [Input('stock-ticker', 'value')]
+    Output('output-data', 'children'),
+    Output('stock-graph', 'figure'),
+    Input('ticker-dropdown', 'value'),
+    Input('timeframe-dropdown', 'value')
 )
-def update_stock_data(stock_ticker):
-    print(f"Selected ticker: {stock_ticker}")
-    stock_data = StockData(stock_ticker)
+def update_output(selected_ticker, selected_timeframe):
+    # Fetch the latest data for the selected ticker and timeframe
+    df = fetch_data_for_ticker(selected_ticker, selected_timeframe)
     
-    # Retrieve data from Finviz and manual sources
-    data_finviz = stock_data.get_data_finviz()
-    data_manual = stock_data.get_data_manual()
-
-    # Prepare Finviz data table
-    if not data_finviz.empty:
-        finviz_table = html.Table([
-            html.Tr([html.Th(col) for col in data_finviz.columns]),
-            *[html.Tr([html.Td(val) for val in row]) for row in data_finviz.values]
+    if df is not None:
+        # Create a simple table
+        table = html.Table([
+            html.Tr([html.Th(col) for col in df.columns])] +  # Header
+            [html.Tr([html.Td(df.iloc[i][col]) for col in df.columns]) for i in range(len(df))]  # Data
+        , style={'width': '100%', 'borderCollapse': 'collapse', 'margin': 'auto', 'backgroundColor': '#fff'})
+        
+        # Create an enhanced plot
+        figure = go.Figure(data=[
+            go.Bar(x=df['Metric'], y=df['Value'], marker_color='royalblue')
         ])
+        figure.update_layout(
+            title=f'{selected_ticker} Stock Data',
+            xaxis_title='Metric',
+            yaxis_title='Value',
+            template='plotly_white',
+            margin=dict(l=40, r=40, t=40, b=40)
+        )
+        return table, figure
     else:
-        finviz_table = html.Div("No Finviz data available.")
+        return "No data found.", {}
 
-    # Prepare Manual data table
-    if not data_manual.empty:
-        manual_table = html.Table([
-            html.Tr([html.Th(col) for col in data_manual.columns]),
-            *[html.Tr([html.Td(val) for val in row]) for row in data_manual.values]
-        ])
-    else:
-        manual_table = html.Div("No Manual data available.")
-
-    return html.Div([
-        html.H2('Finviz Data'),
-        finviz_table,
-        html.Hr(),
-        html.H2('Manual Data'),
-        manual_table
-    ])
-
-# Run the server
+# Run the app
 if __name__ == '__main__':
     app.run_server(debug=True)

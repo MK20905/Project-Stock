@@ -16,23 +16,23 @@ print("\nRecent TSLA News:")
 print(news_df)
 
 
-from finvizfinance.news import News
+# from finvizfinance.news import News
 
-fnews = News()
-all_news = fnews.get_news()
-print(all_news)
-all_news['blogs'].head()
+# fnews = News()
+# all_news = fnews.get_news()
+# print(all_news)
+# all_news['blogs'].head()
 
-from finvizfinance.screener.overview import Overview
+# from finvizfinance.screener.overview import Overview
 
-foverview = Overview()
-filters_dict = {'Index':'S&P 500','Sector':'Basic Materials'}
-foverview.set_filter(filters_dict=filters_dict)
-df = foverview.screener_view()
-df.head()
-print(df)
+# foverview = Overview()
+# filters_dict = {'Index':'S&P 500','Sector':'Basic Materials'}
+# foverview.set_filter(filters_dict=filters_dict)
+# df = foverview.screener_view()
+# df.head()
+# print(df)
 
-from finvizfinance.util import set_proxy
+# from finvizfinance.util import set_proxy
 
-proxies={'http': 'http://127.0.0.1:8080'}
-set_proxy(proxies)
+# proxies={'http': 'http://127.0.0.1:8080'}
+# set_proxy(proxies)
