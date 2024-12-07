@@ -5,17 +5,17 @@ from finvizfinance.quote import finvizfinance
 import plotly.graph_objs as go
 import logging
 
-# Configure logging
+
 logging.basicConfig(filename='stock_screener.log', level=logging.INFO, 
                     format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Initialize the Dash app
+
 app = dash.Dash(__name__)
 
-# Define a list of tickers
-tickers = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'FB', 'NFLX', 'NVDA', 'BRK.B', 'JPM']
 
-# Define a list of time frames
+tickers = ['AAPL', 'ABNB', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NFLX', 'NVDA', 'JPM']
+
+
 time_frames = [
     {'label': '1 Minute', 'value': '1min'},
     {'label': '5 Minutes', 'value': '5min'},
@@ -27,7 +27,6 @@ time_frames = [
     {'label': '5 Years', 'value': '5Y'}
 ]
 
-# Define the layout of the app
 app.layout = html.Div([
     html.H1("Stock Screener Dashboard", style={'textAlign': 'center', 'color': '#333'}),
     dcc.Dropdown(

@@ -6,11 +6,11 @@ import os
 import glob
 import logging
 
-# Configure logging
+
 logging.basicConfig(filename='stock_screener.log', level=logging.INFO, 
                     format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Initialize the Dash app
+
 app = dash.Dash(__name__)
 
 # Path to CSV data
