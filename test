@@ -1,0 +1,45 @@
+@app.callback(
+    [Output('candlestick-chart', 'figure'), Output('volume-chart', 'figure')],
+    [Input('timeframe-dropdown', 'value')],
+    Input('url', 'pathname')
+)
+def update_detail_page(timeframe, pathname):
+    if pathname.startswith('/ticker/'):
+        ticker_symbol = pathname.split('/')[2]
+        historical_data = fetch_finviz_historical_data(ticker_symbol)
+
+        print(f"🔍 Debugging Data for {ticker_symbol}:")
+        print(historical_data.head())  # Print the first few rows
+
+        # ✅ Check if data is empty
+        if historical_data.empty:
+            print(f"⚠️ No historical data available for {ticker_symbol}")
+            return go.Figure(), go.Figure()
+
+        # ✅ Check if required columns exist
+        required_columns = ["Date", "Open", "High", "Low", "Close", "Volume"]
+        if not all(col in historical_data.columns for col in required_columns):
+            print(f"⚠️ Missing required columns in data: {historical_data.columns}")
+            return go.Figure(), go.Figure()
+
+        # ✅ Generate Candlestick Chart
+        candlestick_chart = go.Figure()
+        candlestick_chart.add_trace(go.Candlestick(
+            x=historical_data['Date'],
+            open=historical_data['Open'],
+            high=historical_data['High'],
+            low=historical_data['Low'],
+            close=historical_data['Close'],
+            name='Candlestick'
+        ))
+
+        # ✅ Generate Volume Chart
+        volume_chart = go.Figure()
+        volume_chart.add_trace(go.Bar(
+            x=historical_data['Date'], y=historical_data['Volume'],
+            name='Volume'
+        ))
+
+        return candlestick_chart, volume_chart
+    
+    return go.Figure(), go.Figure()

@@ -105,6 +105,7 @@ def log_data_for_tickers(tickers):
         print(f"Data saved to {filename}")
 
     end_time = datetime.now()
+    total_runtime = (end_time - start_time).total_seconds()
     print(f"\nTotal runtime: {total_runtime:.2f} seconds")
 
 

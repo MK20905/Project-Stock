@@ -5,19 +5,19 @@ import requests
 from io import StringIO
 from flask_caching import Cache
 import plotly.graph_objs as go
-import yfinance as yf
+from bs4 import BeautifulSoup
 
 
 app = dash.Dash(__name__, suppress_callback_exceptions=True)
 
-
+# Configure caching
 cache = Cache(app.server, config={'CACHE_TYPE': 'SimpleCache', 'CACHE_DEFAULT_TIMEOUT': 600})
 
+# Finviz export URL (Replace with your actual Finviz Elite token)
+finviz_url = "https://elite.finviz.com/export.ashx?v=111&f=allYourFilters&auth=47eff682-6766-43ff-ac22-171365defff9"
 
-finviz_url = "https://elite.finviz.com/export.ashx?v=111&f=allYourFilters&auth=5816dbf7-9aad-4ed2-bfd0-eb0d8e01025a"
 
-
-@cache.memoize(timeout=600) 
+@cache.memoize(timeout=600)
 def fetch_finviz_data():
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
@@ -41,45 +41,44 @@ def fetch_finviz_data():
     else:
         print(f"Failed to fetch data. Status code: {response.status_code}")
         return pd.DataFrame({"Error": [f"Failed to fetch data. Status code: {response.status_code}"]})
+def fetch_finviz_historical_data(ticker_symbol):
+    url = f"https://finviz.com/quote.ashx?t={ticker_symbol}"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    response = requests.get(url, headers=headers)
+
+    if response.status_code != 200:
+        print(f"❌ Failed to fetch Finviz page for {ticker_symbol}")
+        return pd.DataFrame()
+
+    soup = BeautifulSoup(response.text, "html.parser")
+    
 
 
+    print(soup.prettify()[:1000])  # Debug: Print first 1000 characters of the HTML
+
+    return pd.DataFrame()  
 def fetch_detailed_stock_data(ticker_symbol):
-    stock = yf.Ticker(ticker_symbol)
+    """
+    Fetch stock details from Finviz.
+    """
+    df = fetch_finviz_data()
+    detail_df = df[df['Ticker'] == ticker_symbol]
+
+    if detail_df.empty:
+        return pd.DataFrame({"Metric": ["No data available"], "Value": ["N/A"]})
+
     data = {
-        "Index": stock.info.get("index", "N/A"),
-        "Market Cap": stock.info.get("marketCap", "N/A"),
-        "P/E": stock.info.get("trailingPE", "N/A"),
-        "Forward P/E": stock.info.get("forwardPE", "N/A"),
-        "EPS (ttm)": stock.info.get("trailingEps", "N/A"),
-        "EPS (next Y)": stock.info.get("forwardEps", "N/A"),
-        "EPS Growth": stock.info.get("earningsGrowth", "N/A"),
-        "Revenue": stock.info.get("totalRevenue", "N/A"),
-        "Operating Margin": stock.info.get("operatingMargins", "N/A"),
-        "ROE": stock.info.get("returnOnEquity", "N/A"),
-        "Debt/Equity": stock.info.get("debtToEquity", "N/A"),
-        "Beta": stock.info.get("beta", "N/A"),
-        "Volume": stock.info.get("regularMarketVolume", "N/A"),
-        "52 Week High": stock.info.get("fiftyTwoWeekHigh", "N/A"),
-        "52 Week Low": stock.info.get("fiftyTwoWeekLow", "N/A"),
-        "Target Price": stock.info.get("targetMeanPrice", "N/A")
+        "Market Cap": detail_df['Market Cap'].values[0] if 'Market Cap' in detail_df.columns else "N/A",
+        "P/E": detail_df['P/E'].values[0] if 'P/E' in detail_df.columns else "N/A",
+        "EPS (ttm)": detail_df['EPS'].values[0] if 'EPS' in detail_df.columns else "N/A",
+        "Volume": detail_df['Volume'].values[0] if 'Volume' in detail_df.columns else "N/A",
+        "52 Week High": detail_df['52W High'].values[0] if '52W High' in detail_df.columns else "N/A",
+        "52 Week Low": detail_df['52W Low'].values[0] if '52W Low' in detail_df.columns else "N/A",
+        "Target Price": detail_df['Target Price'].values[0] if 'Target Price' in detail_df.columns else "N/A"
     }
+
     return pd.DataFrame(data.items(), columns=["Metric", "Value"])
 
-def fetch_historical_data(ticker_symbol, interval):
-    if interval in ['1m', '5m', '15m', '30m', '1h']:
-        period = '7d'
-    else:
-        period = '1y' if interval == '1d' else '5y'
-
-    stock = yf.Ticker(ticker_symbol)
-    df = stock.history(period=period, interval=interval)
-    df.reset_index(inplace=True)
-
-    df['SMA20'] = df['Close'].rolling(window=20).mean()
-    df['SMA50'] = df['Close'].rolling(window=50).mean()
-    df['SMA200'] = df['Close'].rolling(window=200).mean()
-
-    return df
 
 
 def main_page():
@@ -212,9 +211,7 @@ def detail_page(ticker_symbol):
                  style={'textAlign': 'center', 'fontSize': '20px', 'color': '#007BFF'})
     ])
 
-# ----------------------------------------------------------------------
-# Callbacks
-# ----------------------------------------------------------------------
+
 @app.callback(
     [Output('main-table', 'data'),
      Output('refresh-interval', 'interval')],
@@ -224,6 +221,8 @@ def detail_page(ticker_symbol):
      Input('sort-order', 'value')],
     prevent_initial_call=True
 )
+
+
 def update_main_table(n_clicks, refresh_value, sort_by, sort_order):
     print(f"Refresh triggered! Button Clicks: {n_clicks}, Auto-refresh Interval: {refresh_value}s") 
     if refresh_value == 0:  
@@ -233,8 +232,9 @@ def update_main_table(n_clicks, refresh_value, sort_by, sort_order):
     df = fetch_finviz_data()
     ascending = (sort_order == 'asc')
     df = df.sort_values(by=sort_by, ascending=ascending)
-
     return df.to_dict('records'), interval
+
+
 @app.callback(
     Output('url', 'pathname'),
     [Input('main-table', 'active_cell')],
@@ -251,13 +251,26 @@ def navigate_to_ticker(active_cell, table_data):
     return '/'
 @app.callback(
     [Output('candlestick-chart', 'figure'), Output('volume-chart', 'figure')],
-    [Input('timeframe-dropdown', 'value'), Input('sma-options', 'value')],
+    [Input('timeframe-dropdown', 'value')],
     Input('url', 'pathname')
 )
-def update_detail_page(timeframe, sma_options, pathname):
+def update_detail_page(timeframe, pathname):
     if pathname.startswith('/ticker/'):
         ticker_symbol = pathname.split('/')[2]
-        historical_data = fetch_historical_data(ticker_symbol, timeframe)
+        historical_data = fetch_finviz_historical_data(ticker_symbol)
+
+        print(f"🔍 Debugging Data for {ticker_symbol}:")
+        print(historical_data.head())  # Print the first few rows
+
+       
+        if historical_data.empty:
+            print(f"⚠️ No historical data available for {ticker_symbol}")
+            return go.Figure(), go.Figure()
+
+        required_columns = ["Date", "Open", "High", "Low", "Close", "Volume"]
+        if not all(col in historical_data.columns for col in required_columns):
+            print(f"⚠️ Missing required columns in data: {historical_data.columns}")
+            return go.Figure(), go.Figure()
 
         candlestick_chart = go.Figure()
         candlestick_chart.add_trace(go.Candlestick(
@@ -269,12 +282,6 @@ def update_detail_page(timeframe, sma_options, pathname):
             name='Candlestick'
         ))
 
-        for sma in sma_options:
-            candlestick_chart.add_trace(go.Scatter(
-                x=historical_data['Date'], y=historical_data[sma],
-                mode='lines', name=sma
-            ))
-
         volume_chart = go.Figure()
         volume_chart.add_trace(go.Bar(
             x=historical_data['Date'], y=historical_data['Volume'],
@@ -282,7 +289,9 @@ def update_detail_page(timeframe, sma_options, pathname):
         ))
 
         return candlestick_chart, volume_chart
-    return {}, {}
+    
+    return go.Figure(), go.Figure()
+
 @app.callback(
     Output('page-content', 'children'),
     Input('url', 'pathname')
@@ -306,4 +315,3 @@ app.layout = html.Div([
 
 if __name__ == '__main__':
     app.run_server(debug=True)
-

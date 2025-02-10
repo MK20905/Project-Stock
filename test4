@@ -5,7 +5,7 @@ import requests
 from io import StringIO
 from flask_caching import Cache
 import plotly.graph_objs as go
-import yfinance as yf
+import numpy as np
 
 app = dash.Dash(__name__, suppress_callback_exceptions=True)
 cache = Cache(app.server, config={'CACHE_TYPE': 'SimpleCache', 'CACHE_DEFAULT_TIMEOUT': 600})
@@ -32,48 +32,53 @@ def fetch_finviz_data():
         return pd.DataFrame({"Error": [f"Failed to fetch data. Status code: {response.status_code}"]})
 
 def fetch_detailed_stock_data(ticker_symbol):
-    stock = yf.Ticker(ticker_symbol)
+    df = fetch_finviz_data()
+    stock_data = df[df['Ticker'] == ticker_symbol]
+    if stock_data.empty:
+        return pd.DataFrame({"Error": ["No data found for this ticker."]})
+    
     data = {
-        "Index": stock.info.get("index", "N/A"),
-        "Market Cap": stock.info.get("marketCap", "N/A"),
-        "P/E": stock.info.get("trailingPE", "N/A"),
-        "Forward P/E": stock.info.get("forwardPE", "N/A"),
-        "EPS (ttm)": stock.info.get("trailingEps", "N/A"),
-        "EPS (next Y)": stock.info.get("forwardEps", "N/A"),
-        "EPS Growth": stock.info.get("earningsGrowth", "N/A"),
-        "Revenue": stock.info.get("totalRevenue", "N/A"),
-        "Operating Margin": stock.info.get("operatingMargins", "N/A"),
-        "ROE": stock.info.get("returnOnEquity", "N/A"),
-        "Debt/Equity": stock.info.get("debtToEquity", "N/A"),
-        "Beta": stock.info.get("beta", "N/A"),
-        "Volume": stock.info.get("regularMarketVolume", "N/A"),
-        "52 Week High": stock.info.get("fiftyTwoWeekHigh", "N/A"),
-        "52 Week Low": stock.info.get("fiftyTwoWeekLow", "N/A"),
-        "Target Price": stock.info.get("targetMeanPrice", "N/A")
+        "Index": stock_data['Index'].values[0] if 'Index' in stock_data.columns else "N/A",
+        "Market Cap": stock_data['MarketCap'].values[0] if 'MarketCap' in stock_data.columns else "N/A",
+        "P/E": stock_data['P/E'].values[0] if 'P/E' in stock_data.columns else "N/A",
+        "Forward P/E": stock_data['Forward P/E'].values[0] if 'Forward P/E' in stock_data.columns else "N/A",
+        "EPS (ttm)": stock_data['EPS (ttm)'].values[0] if 'EPS (ttm)' in stock_data.columns else "N/A",
+        "EPS (next Y)": stock_data['EPS (next Y)'].values[0] if 'EPS (next Y)' in stock_data.columns else "N/A",
+        "EPS Growth": stock_data['EPS growth next 5 years'].values[0] if 'EPS growth next 5 years' in stock_data.columns else "N/A",
+        "Revenue": stock_data['Sales'].values[0] if 'Sales' in stock_data.columns else "N/A",
+        "Operating Margin": stock_data['Operating Margin'].values[0] if 'Operating Margin' in stock_data.columns else "N/A",
+        "ROE": stock_data['ROE'].values[0] if 'ROE' in stock_data.columns else "N/A",
+        "Debt/Equity": stock_data['Debt/Eq'].values[0] if 'Debt/Eq' in stock_data.columns else "N/A",
+        "Beta": stock_data['Beta'].values[0] if 'Beta' in stock_data.columns else "N/A",
+        "Volume": stock_data['Volume'].values[0] if 'Volume' in stock_data.columns else "N/A",
+        "52 Week High": stock_data['52W High'].values[0] if '52W High' in stock_data.columns else "N/A",
+        "52 Week Low": stock_data['52W Low'].values[0] if '52W Low' in stock_data.columns else "N/A",
+        "Target Price": stock_data['Target Price'].values[0] if 'Target Price' in stock_data.columns else "N/A"
     }
     return pd.DataFrame(data.items(), columns=["Metric", "Value"])
 
-def fetch_historical_data(ticker_symbol, interval):
-    if interval in ['1m', '3m', '5m', '30m', '1h']:
-        period = '7d'
-    elif interval == '1d':
-        period = '1mo'
-    elif interval == '1w':
-        period = '6mo'
-    elif interval == '1M':
-        period = '1y'
-    else:
-        period = '1y'  # Default to 1 year for any other case
+def generate_dummy_historical_data():
+    # Generate dummy historical data for the last 30 days
+    dates = pd.date_range(end=pd.Timestamp.today(), periods=30)
+    prices = np.random.uniform(low=100, high=200, size=(30,))  # Random prices
+    volume = np.random.randint(low=1000, high=10000, size=(30,))  # Random volume
 
-    stock = yf.Ticker(ticker_symbol)
-    df = stock.history(period=period, interval=interval)
-    df.reset_index(inplace=True)
+    # Create a DataFrame
+    historical_data = pd.DataFrame({
+        'Date': dates,
+        'Open': prices,
+        'High': prices + np.random.uniform(0, 10, size=(30,)),  # High is higher than Open
+        'Low': prices - np.random.uniform(0, 10, size=(30,)),   # Low is lower than Open
+        'Close': prices + np.random.uniform(-5, 5, size=(30,)),  # Close is around Open
+        'Volume': volume
+    })
 
-    df['SMA20'] = df['Close'].rolling(window=20).mean()
-    df['SMA50'] = df['Close'].rolling(window=50).mean()
-    df['SMA200'] = df['Close'].rolling(window=200).mean()
+    # Calculate SMAs
+    historical_data['SMA20'] = historical_data['Close'].rolling(window=20).mean()
+    historical_data['SMA50'] = historical_data['Close'].rolling(window=50).mean()
+    historical_data['SMA200'] = historical_data['Close'].rolling(window=200).mean()
 
-    return df
+    return historical_data
 
 def main_page():
     df = fetch_finviz_data()
@@ -153,51 +158,49 @@ def main_page():
 
 def detail_page(ticker_symbol):
     details_df = fetch_detailed_stock_data(ticker_symbol)
+    historical_data = generate_dummy_historical_data()  # Generate dummy historical data
 
     return html.Div([
         html.H1(f"Details for {ticker_symbol}", style={'textAlign': 'center', 'color': '#007BFF'}),
-
-        html.Label("Timeframe:", style={'fontWeight': 'bold'}),
-        dcc.Dropdown(
-            id='timeframe-dropdown',
-            options=[
-                {'label': '1 Minute', 'value': '1m'},
-                {'label': '3 Minutes', 'value': '3m'},
-                {'label': '5 Minutes', 'value': '5m'},
-                {'label': '30 Minutes', 'value': '30m'},
-                {'label': '1 Hour', 'value': '1h'},
-                {'label': '1 Day', 'value': '1d'},
-                {'label': '1 Week', 'value': '1w'},
-                {'label': '1 Month', 'value': '1M'},
-            ],
-            value='1d',
-            style={'width': '50%', 'marginBottom': '20px'}
-        ),
-
-        html.Label("Select SMAs to display:", style={'fontWeight': 'bold'}),
-        dcc.Checklist(
-            id='sma-options',
-            options=[
-                {'label': 'SMA20', 'value': 'SMA20'},
-                {'label': 'SMA50', 'value': 'SMA50'},
-                {'label': 'SMA200', 'value': 'SMA200'}
-            ],
-            value=['SMA20', 'SMA50'],  
-            style={'marginBottom': '20px'}
-        ),
-
-        dcc.Graph(id='candlestick-chart'),
-
-        html.H3("Volume", style={'textAlign': 'center'}),
-        dcc.Graph(id='volume-chart'),
-
-        html.H3("Stock Metrics", style={'textAlign': 'center'}),
+        
+        html.Label("Stock Metrics", style={'fontWeight': 'bold'}),
         dash_table.DataTable(
             columns=[{"name": col, "id": col} for col in details_df.columns],
             data=details_df.to_dict('records'),
             style_table={'overflowX': 'auto', 'border': '1px solid #007BFF'},
             style_cell={'textAlign': 'left', 'padding': '10px', 'border': '1px solid #f4f4f4'},
             style_header={'backgroundColor': '#007BFF', 'fontWeight': 'bold', 'color': 'white'},
+        ),
+
+        dcc.Graph(
+            id='candlestick-chart',
+            figure={
+                'data': [
+                    go.Candlestick(
+                        x=historical_data['Date'],
+                        open=historical_data['Open'],
+                        high=historical_data['High'],
+                        low=historical_data['Low'],
+                        close=historical_data['Close'],
+                        name='Candlestick'
+                    )
+                ],
+                'layout': go.Layout(title='Candlestick Chart', xaxis_title='Date', yaxis_title='Price')
+            }
+        ),
+
+        dcc.Graph(
+            id='volume-chart',
+            figure={
+                'data': [
+                    go.Bar(
+                        x=historical_data['Date'],
+                        y=historical_data['Volume'],
+                        name='Volume'
+                    )
+                ],
+                'layout': go.Layout(title='Volume Chart', xaxis_title='Date', yaxis_title='Volume')
+            }
         ),
 
         # Link back to the main page
@@ -245,41 +248,6 @@ def navigate_to_ticker(active_cell, table_data):
         ticker_symbol = table_data[row]['Ticker'] 
         return f'/ticker/{ticker_symbol}' 
     return '/'
-
-@app.callback(
-    [Output('candlestick-chart', 'figure'), Output('volume-chart', 'figure')],
-    [Input('timeframe-dropdown', 'value'), Input('sma-options', 'value')],
-    Input('url', 'pathname')
-)
-def update_detail_page(timeframe, sma_options, pathname):
-    if pathname.startswith('/ticker/'):
-        ticker_symbol = pathname.split('/')[2]
-        historical_data = fetch_historical_data(ticker_symbol, timeframe)
-
-        candlestick_chart = go.Figure()
-        candlestick_chart.add_trace(go.Candlestick(
-            x=historical_data.index,
-            open=historical_data['Open'],
-            high=historical_data['High'],
-            low=historical_data['Low'],
-            close=historical_data['Close'],
-            name='Candlestick'
-        ))
-
-        for sma in sma_options:
-            candlestick_chart.add_trace(go.Scatter(
-                x=historical_data.index, y=historical_data[sma],
-                mode='lines', name=sma
-            ))
-
-        volume_chart = go.Figure()
-        volume_chart.add_trace(go.Bar(
-            x=historical_data.index, y=historical_data['Volume'],
-            name='Volume'
-        ))
-
-        return candlestick_chart, volume_chart
-    return {}, {}
 
 @app.callback(
     Output('page-content', 'children'),
