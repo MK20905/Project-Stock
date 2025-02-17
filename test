@@ -1,45 +1,301 @@
+import dash
+from dash import dcc, html, Input, Output, dash_table
+import pandas as pd
+import yfinance as yf
+import plotly.graph_objs as go
+
+# Initialize Dash app
+app = dash.Dash(__name__, suppress_callback_exceptions=True)
+
+# Global list of tickers
+tickers = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NFLX', 'NVDA', 'JPM']
+
+# Timeframe options for detailed page
+timeframes = [
+    {'label': '1 Minute', 'value': '1m'},
+    {'label': '5 Minutes', 'value': '5m'},
+    {'label': '15 Minutes', 'value': '15m'},
+    {'label': '30 Minutes', 'value': '30m'},
+    {'label': '1 Hour', 'value': '1h'},
+    {'label': '1 Day', 'value': '1d'},
+    {'label': '1 Week', 'value': '1wk'},
+    {'label': '1 Month', 'value': '1mo'}
+]
+# Fetch detailed stock data
+def fetch_detailed_stock_data(ticker):
+    stock = yf.Ticker(ticker)
+    data = {
+        "Index": stock.info.get("index", "N/A"),
+        "Market Cap": stock.info.get("marketCap", "N/A"),
+        "P/E": stock.info.get("trailingPE", "N/A"),
+        "Forward P/E": stock.info.get("forwardPE", "N/A"),
+        "EPS (ttm)": stock.info.get("trailingEps", "N/A"),
+        "EPS (next Y)": stock.info.get("forwardEps", "N/A"),
+        "EPS Growth": stock.info.get("earningsGrowth", "N/A"),
+        "Revenue": stock.info.get("totalRevenue", "N/A"),
+        "Operating Margin": stock.info.get("operatingMargins", "N/A"),
+        "ROE": stock.info.get("returnOnEquity", "N/A"),
+        "Debt/Equity": stock.info.get("debtToEquity", "N/A"),
+        "Beta": stock.info.get("beta", "N/A"),
+        "Volume": stock.info.get("regularMarketVolume", "N/A"),
+        "52 Week High": stock.info.get("fiftyTwoWeekHigh", "N/A"),
+        "52 Week Low": stock.info.get("fiftyTwoWeekLow", "N/A"),
+        "Target Price": stock.info.get("targetMeanPrice", "N/A")
+    }
+    return pd.DataFrame(data.items(), columns=["Metric", "Value"])
+# Function to fetch main page data
+def fetch_main_page_data():
+    data = []
+    for ticker in tickers:
+        stock = yf.Ticker(ticker)
+        hist = stock.history(period="1d", interval="1d")
+
+        if not hist.empty:
+            last_close = hist['Close'].iloc[-1]
+            last_open = hist['Open'].iloc[-1]
+            change_percent = ((last_close - last_open) / last_open) * 100
+        else:
+            change_percent = 0.0
+
+        data.append({
+            "Ticker": ticker,
+            "Company": stock.info.get("longName", "N/A"),
+            "Sector": stock.info.get("sector", "N/A"),
+            "Industry": stock.info.get("industry", "N/A"),
+            "Market Cap": stock.info.get("marketCap", "N/A"),
+            "Change (%)": f"{change_percent:.2f}%",
+            "Volume": f"{stock.info.get('regularMarketVolume', 'N/A'):,}" if stock.info.get("regularMarketVolume") else "N/A"
+        })
+    return pd.DataFrame(data)
+
+# Function to fetch historical data for the detailed page
+def fetch_historical_data(ticker, interval):
+    if interval in ['1m', '5m', '15m', '30m', '1h']:
+        period = '7d'
+    else:
+        period = '6mo'
+
+    stock = yf.Ticker(ticker)
+    df = stock.history(period=period, interval=interval)
+    df.reset_index(inplace=True)
+    df['SMA20'] = df['Close'].rolling(window=20).mean()
+    df['SMA50'] = df['Close'].rolling(window=50).mean()
+    df['SMA200'] = df['Close'].rolling(window=200).mean()
+    return df
+
+# Layout for main page
+def main_page():
+    df = fetch_main_page_data()
+    return html.Div([
+        html.H1("Stock Screener - Main Page", style={'textAlign': 'center', 'color': '#007BFF'}),
+        
+        # Sorting options
+        html.Div([
+            html.Label("Sort By:"),
+            dcc.Dropdown(
+                id='sort-by-dropdown',
+                options=[{"label": col, "value": col} for col in df.columns],
+                value='Ticker',
+                style={'width': '45%', 'display': 'inline-block', 'marginRight': '10px'}
+            ),
+            dcc.RadioItems(
+                id='sort-order',
+                options=[
+                    {'label': 'Ascending', 'value': 'asc'},
+                    {'label': 'Descending', 'value': 'desc'}
+                ],
+                value='asc',
+                style={'display': 'inline-block'}
+            )
+        ], style={'marginBottom': '20px'}),
+        
+        # Rows per page
+        html.Div([
+            html.Label("Rows per page:"),
+            dcc.Input(id='rows-per-page', type='number', value=10, min=1, style={'marginRight': '10px'}),
+            html.Label("Page:"),
+            dcc.Input(id='page-number', type='number', value=1, min=1)
+        ], style={'marginBottom': '20px'}),
+        
+        # Add more tickers
+        html.Div([
+            html.Label("Add Ticker:"),
+            dcc.Input(id='new-ticker', type='text', placeholder='Enter ticker', style={'marginRight': '10px'}),
+            html.Button('Add', id='add-ticker-button', n_clicks=0)
+        ], style={'marginBottom': '20px'}),
+        
+        # DataTable
+        dash_table.DataTable(
+            id='main-table',
+            columns=[{"name": col, "id": col} for col in df.columns],
+            data=df.to_dict('records'),
+            style_table={'overflowX': 'auto'},
+            style_cell={'textAlign': 'left', 'padding': '5px'},
+            style_header={'backgroundColor': '#f4f4f4', 'fontWeight': 'bold'},
+            style_data_conditional=[
+                {
+                    'if': {'column_id': 'Ticker'},
+                    'cursor': 'pointer',
+                    'color': 'blue',
+                    'textDecoration': 'underline',
+                }
+            ],
+            page_size=10
+        ),
+        
+        html.Div("Click on a ticker to view detailed analysis.", style={'textAlign': 'center', 'marginTop': '10px'}),
+    ])
+
+# Layout for detail page
+def detail_page(ticker):
+    details_df = fetch_detailed_stock_data(ticker)
+    return html.Div([
+        html.H1(f"Details for {ticker}", style={'textAlign': 'center', 'color': '#007BFF'}),
+        html.H3("Stock Metrics", style={'textAlign': 'center'}),
+        dash_table.DataTable(
+            columns=[{"name": col, "id": col} for col in details_df.columns],
+            data=details_df.to_dict('records'),
+            style_table={'overflowX': 'auto'},
+            style_cell={'textAlign': 'left', 'padding': '5px'},
+            style_header={'backgroundColor': '#f4f4f4', 'fontWeight': 'bold'},
+        ),
+        # Timeframe Dropdown
+        dcc.Dropdown(
+            id='timeframe-dropdown',
+            options=timeframes,
+            value='1d',
+            style={'marginBottom': '20px'}
+        ),
+
+        # Dashboard options checklist
+        dcc.Checklist(
+            id='dashboard-options',
+            options=[
+                {'label': 'Show Candlestick Chart', 'value': 'candlestick'},
+                {'label': 'Show Volume Chart', 'value': 'volume'},
+                {'label': 'Show SMA20', 'value': 'SMA20'},
+                {'label': 'Show SMA50', 'value': 'SMA50'},
+                {'label': 'Show SMA200', 'value': 'SMA200'},
+            ],
+            value=['candlestick', 'volume'],
+            style={'marginBottom': '20px'}
+        ),
+
+        dcc.Graph(id='stock-chart'),
+        dcc.Graph(id='volume-chart'),
+
+        dcc.Link('Back to Main Page', href='/', style={'textAlign': 'center', 'fontSize': '20px', 'color': '#007BFF'})
+    ])
+
+# Callbacks
 @app.callback(
-    [Output('candlestick-chart', 'figure'), Output('volume-chart', 'figure')],
-    [Input('timeframe-dropdown', 'value')],
-    Input('url', 'pathname')
+    Output('main-table', 'data'),
+    [Input('sort-by-dropdown', 'value'),
+     Input('sort-order', 'value'),
+     Input('rows-per-page', 'value'),
+     Input('page-number', 'value'),
+     Input('add-ticker-button', 'n_clicks')],
+    [dash.dependencies.State('new-ticker', 'value'),
+     dash.dependencies.State('main-table', 'data')]
 )
-def update_detail_page(timeframe, pathname):
+def update_main_table(sort_by, sort_order, rows_per_page, page_number, n_clicks, new_ticker, current_data):
+    global tickers
+    df = fetch_main_page_data()
+
+    if n_clicks > 0 and new_ticker and new_ticker.upper() not in tickers:
+        tickers.append(new_ticker.upper())
+        df = fetch_main_page_data()
+
+    ascending = sort_order == 'asc'
+    if sort_by in df.columns:
+        df = df.sort_values(by=sort_by, ascending=ascending)
+
+    start_row = (page_number - 1) * rows_per_page
+    end_row = start_row + rows_per_page
+    df = df.iloc[start_row:end_row]
+
+    return df.to_dict('records')
+
+@app.callback(
+    [Output('stock-chart', 'figure'),
+     Output('volume-chart', 'figure')],
+    [Input('dashboard-options', 'value'),
+     Input('timeframe-dropdown', 'value'),
+     Input('url', 'pathname')]
+)
+def update_dashboard(selected_options, selected_timeframe, pathname):
     if pathname.startswith('/ticker/'):
-        ticker_symbol = pathname.split('/')[2]
-        historical_data = fetch_finviz_historical_data(ticker_symbol)
+        ticker = pathname.split('/')[2]
+        historical_data = fetch_historical_data(ticker, interval=selected_timeframe)
 
-        print(f"🔍 Debugging Data for {ticker_symbol}:")
-        print(historical_data.head())  # Print the first few rows
-
-        # ✅ Check if data is empty
-        if historical_data.empty:
-            print(f"⚠️ No historical data available for {ticker_symbol}")
-            return go.Figure(), go.Figure()
-
-        # ✅ Check if required columns exist
-        required_columns = ["Date", "Open", "High", "Low", "Close", "Volume"]
-        if not all(col in historical_data.columns for col in required_columns):
-            print(f"⚠️ Missing required columns in data: {historical_data.columns}")
-            return go.Figure(), go.Figure()
-
-        # ✅ Generate Candlestick Chart
         candlestick_chart = go.Figure()
-        candlestick_chart.add_trace(go.Candlestick(
-            x=historical_data['Date'],
-            open=historical_data['Open'],
-            high=historical_data['High'],
-            low=historical_data['Low'],
-            close=historical_data['Close'],
-            name='Candlestick'
-        ))
+        if 'candlestick' in selected_options:
+            candlestick_chart.add_trace(go.Candlestick(
+                x=historical_data['Date'],
+                open=historical_data['Open'],
+                high=historical_data['High'],
+                low=historical_data['Low'],
+                close=historical_data['Close'],
+                name='Candlestick'
+            ))
 
-        # ✅ Generate Volume Chart
+        if 'SMA20' in selected_options:
+            candlestick_chart.add_trace(go.Scatter(
+                x=historical_data['Date'], y=historical_data['SMA20'],
+                mode='lines', name='SMA20'
+            ))
+        if 'SMA50' in selected_options:
+            candlestick_chart.add_trace(go.Scatter(
+                x=historical_data['Date'], y=historical_data['SMA50'],
+                mode='lines', name='SMA50'
+            ))
+        if 'SMA200' in selected_options:
+            candlestick_chart.add_trace(go.Scatter(
+                x=historical_data['Date'], y=historical_data['SMA200'],
+                mode='lines', name='SMA200'
+            ))
+
         volume_chart = go.Figure()
-        volume_chart.add_trace(go.Bar(
-            x=historical_data['Date'], y=historical_data['Volume'],
-            name='Volume'
-        ))
+        if 'volume' in selected_options:
+            volume_chart.add_trace(go.Bar(
+                x=historical_data['Date'],
+                y=historical_data['Volume'],
+                name='Volume'
+            ))
 
         return candlestick_chart, volume_chart
-    
-    return go.Figure(), go.Figure()
+    return {}, {}
+
+@app.callback(
+    Output('page-content', 'children'),
+    [Input('url', 'pathname')]
+)
+def display_page(pathname):
+    if pathname == '/' or pathname is None:
+        return main_page()
+    elif pathname.startswith('/ticker/'):
+        ticker = pathname.split('/')[2]
+        return detail_page(ticker)
+    else:
+        return html.H1("404: Page Not Found", style={'textAlign': 'center', 'color': 'red'})
+
+@app.callback(
+    Output('url', 'pathname'),
+    [Input('main-table', 'active_cell')],
+    [dash.dependencies.State('main-table', 'data')]
+)
+def navigate_to_ticker(active_cell, table_data):
+    if active_cell:
+        row = active_cell['row']
+        ticker = table_data[row]['Ticker']
+        return f'/ticker/{ticker}'
+    return '/'
+
+# Main app layout
+app.layout = html.Div([
+    dcc.Location(id='url', refresh=False),
+    html.Div(id='page-content')
+])
+
+if __name__ == '__main__':
+    app.run_server(debug=True)

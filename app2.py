@@ -14,7 +14,7 @@ app = dash.Dash(__name__, suppress_callback_exceptions=True)
 cache = Cache(app.server, config={'CACHE_TYPE': 'SimpleCache', 'CACHE_DEFAULT_TIMEOUT': 600})
 
 
-finviz_url = "https://elite.finviz.com/export.ashx?v=111&f=allYourFilters&auth=5816dbf7-9aad-4ed2-bfd0-eb0d8e01025a"
+finviz_url = "https://elite.finviz.com/export.ashx?v=111&f=allYourFilters&auth=784de70f-dc27-4d2b-a5ce-adad138ec0c3"
 
 
 @cache.memoize(timeout=600) 
@@ -73,13 +73,32 @@ def fetch_historical_data(ticker_symbol, interval):
 
     stock = yf.Ticker(ticker_symbol)
     df = stock.history(period=period, interval=interval)
+
+    # If data is empty, try fallback options
+    if df.empty and interval in ['1m', '5m', '15m', '30m', '1h']:
+        fallback_period = '1d'
+        df = stock.history(period=fallback_period, interval=interval)
+        if df.empty:
+            df = stock.history(period='1y', interval='1d')
+
+    # Reset index so the date becomes a column
     df.reset_index(inplace=True)
 
-    df['SMA20'] = df['Close'].rolling(window=20).mean()
-    df['SMA50'] = df['Close'].rolling(window=50).mean()
-    df['SMA200'] = df['Close'].rolling(window=200).mean()
+    # Ensure that the date column is named 'Date'
+    # Sometimes the column name might be 'Datetime' or something else.
+    if 'Date' not in df.columns:
+        # Rename the first column (assumed to be the date) to 'Date'
+        df.rename(columns={df.columns[0]: 'Date'}, inplace=True)
+
+    # Calculate SMAs if there's data available
+    if not df.empty:
+        df['SMA20'] = df['Close'].rolling(window=20).mean()
+        df['SMA50'] = df['Close'].rolling(window=50).mean()
+        df['SMA200'] = df['Close'].rolling(window=200).mean()
 
     return df
+
+
 
 
 def main_page():
@@ -99,8 +118,6 @@ def main_page():
                 options=[
                     {'label': '10s', 'value': 10},
                     {'label': '1min', 'value': 60},
-                    {'label': '3min', 'value': 180},  
-                    {'label': '5min', 'value': 300},  
                     {'label': 'off', 'value': 0},
                 ],
                 value=0, 

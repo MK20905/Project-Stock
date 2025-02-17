@@ -5,25 +5,21 @@ import requests
 from io import StringIO
 from flask_caching import Cache
 import plotly.graph_objs as go
-from bs4 import BeautifulSoup
-
+import yfinance as yf
 
 app = dash.Dash(__name__, suppress_callback_exceptions=True)
 
-# Configure caching
+# Set up server-side cache for API calls (if needed)
 cache = Cache(app.server, config={'CACHE_TYPE': 'SimpleCache', 'CACHE_DEFAULT_TIMEOUT': 600})
 
-# Finviz export URL (Replace with your actual Finviz Elite token)
-finviz_url = "https://elite.finviz.com/export.ashx?v=111&f=allYourFilters&auth=47eff682-6766-43ff-ac22-171365defff9"
+finviz_url = "https://elite.finviz.com/export.ashx?v=111&f=allYourFilters&auth=784de70f-dc27-4d2b-a5ce-adad138ec0c3"
 
-
-@cache.memoize(timeout=600)
+@cache.memoize(timeout=600) 
 def fetch_finviz_data():
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
     }
     response = requests.get(finviz_url, headers=headers)
-    
     print(f"Fetching new data from Finviz... Status: {response.status_code}")  
 
     if response.status_code == 200:
@@ -41,54 +37,62 @@ def fetch_finviz_data():
     else:
         print(f"Failed to fetch data. Status code: {response.status_code}")
         return pd.DataFrame({"Error": [f"Failed to fetch data. Status code: {response.status_code}"]})
-def fetch_finviz_historical_data(ticker_symbol):
-    url = f"https://finviz.com/quote.ashx?t={ticker_symbol}"
-    headers = {"User-Agent": "Mozilla/5.0"}
-    response = requests.get(url, headers=headers)
 
-    if response.status_code != 200:
-        print(f"❌ Failed to fetch Finviz page for {ticker_symbol}")
-        return pd.DataFrame()
-
-    soup = BeautifulSoup(response.text, "html.parser")
-    
-
-
-    print(soup.prettify()[:1000])  # Debug: Print first 1000 characters of the HTML
-
-    return pd.DataFrame()  
 def fetch_detailed_stock_data(ticker_symbol):
-    """
-    Fetch stock details from Finviz.
-    """
-    df = fetch_finviz_data()
-    detail_df = df[df['Ticker'] == ticker_symbol]
-
-    if detail_df.empty:
-        return pd.DataFrame({"Metric": ["No data available"], "Value": ["N/A"]})
-
+    stock = yf.Ticker(ticker_symbol)
     data = {
-        "Market Cap": detail_df['Market Cap'].values[0] if 'Market Cap' in detail_df.columns else "N/A",
-        "P/E": detail_df['P/E'].values[0] if 'P/E' in detail_df.columns else "N/A",
-        "EPS (ttm)": detail_df['EPS'].values[0] if 'EPS' in detail_df.columns else "N/A",
-        "Volume": detail_df['Volume'].values[0] if 'Volume' in detail_df.columns else "N/A",
-        "52 Week High": detail_df['52W High'].values[0] if '52W High' in detail_df.columns else "N/A",
-        "52 Week Low": detail_df['52W Low'].values[0] if '52W Low' in detail_df.columns else "N/A",
-        "Target Price": detail_df['Target Price'].values[0] if 'Target Price' in detail_df.columns else "N/A"
+        "Index": stock.info.get("index", "N/A"),
+        "Market Cap": stock.info.get("marketCap", "N/A"),
+        "P/E": stock.info.get("trailingPE", "N/A"),
+        "Forward P/E": stock.info.get("forwardPE", "N/A"),
+        "EPS (ttm)": stock.info.get("trailingEps", "N/A"),
+        "EPS (next Y)": stock.info.get("forwardEps", "N/A"),
+        "EPS Growth": stock.info.get("earningsGrowth", "N/A"),
+        "Revenue": stock.info.get("totalRevenue", "N/A"),
+        "Operating Margin": stock.info.get("operatingMargins", "N/A"),
+        "ROE": stock.info.get("returnOnEquity", "N/A"),
+        "Debt/Equity": stock.info.get("debtToEquity", "N/A"),
+        "Beta": stock.info.get("beta", "N/A"),
+        "Volume": stock.info.get("regularMarketVolume", "N/A"),
+        "52 Week High": stock.info.get("fiftyTwoWeekHigh", "N/A"),
+        "52 Week Low": stock.info.get("fiftyTwoWeekLow", "N/A"),
+        "Target Price": stock.info.get("targetMeanPrice", "N/A")
     }
-
     return pd.DataFrame(data.items(), columns=["Metric", "Value"])
 
+def fetch_historical_data(ticker_symbol, interval):
+    # For intraday intervals, use a shorter period
+    if interval in ['1m', '5m', '15m', '30m', '1h']:
+        period = '7d'
+    else:
+        # For daily or higher intervals
+        period = '1y' if interval == '1d' else '5y'
+
+    stock = yf.Ticker(ticker_symbol)
+    df = stock.history(period=period, interval=interval)
+    
+    # Ensure the Date column is in datetime format (if not already)
+    df.reset_index(inplace=True)
+    
+    # Calculate SMAs if there is enough data
+    if not df.empty:
+        df['SMA20'] = df['Close'].rolling(window=20).mean()
+        df['SMA50'] = df['Close'].rolling(window=50).mean()
+        df['SMA200'] = df['Close'].rolling(window=200).mean()
+    
+    return df
 
 
 def main_page():
+    # The initial data is loaded into the store (client side) so we can use it immediately
     df = fetch_finviz_data()
     if df.empty or "Error" in df.columns:
         return html.Div("No data available. Please check your Finviz configuration.", 
                         style={'textAlign': 'center', 'color': 'red'})
-
     return html.Div([
         html.H1("Stock Screener - Main Page", style={'textAlign': 'center', 'color': '#007BFF'}),
+        
+        # Refresh controls and refresh interval radio buttons
         html.Div([
             html.Button("Refresh Data", id="refresh-button", n_clicks=0, style={
                 'backgroundColor': '#007BFF', 'color': 'white', 'padding': '10px 20px', 'borderRadius': '5px'
@@ -98,24 +102,26 @@ def main_page():
                 options=[
                     {'label': '10s', 'value': 10},
                     {'label': '1min', 'value': 60},
-                    {'label': '3min', 'value': 180},  
-                    {'label': '5min', 'value': 300},  
+                    {'label': '3min', 'value': 180},  # 3 minutes in seconds
+                    {'label': '5min', 'value': 300},  # 5 minutes in seconds
                     {'label': 'off', 'value': 0},
                 ],
                 value=0, 
                 labelStyle={'marginRight': '20px'}
             )
         ], style={'display': 'flex', 'alignItems': 'center', 'marginBottom': '20px'}),
+        
+        # dcc.Interval to trigger store updates. Its interval is controlled via a callback.
         dcc.Interval(id='refresh-interval', interval=0, n_intervals=0),
 
+        # dcc.Store holds our Finviz data
+        dcc.Store(id='finviz-data-store'),
 
         html.Div([
             html.Label("Sort By:"),
             dcc.Dropdown(
                 id='sort-by-dropdown',
-                options=[
-                    {'label': col, 'value': col} for col in df.columns 
-                ],
+                options=[{'label': col, 'value': col} for col in df.columns],
                 value='Ticker',
                 style={'width': '45%', 'display': 'inline-block', 'marginRight': '10px'}
             ),
@@ -130,7 +136,7 @@ def main_page():
             )
         ], style={'marginBottom': '20px'}),
 
-        # Main table
+        # Main table that will be updated from the stored data
         dash_table.DataTable(
             id='main-table',
             columns=[{"name": col, "id": col} for col in df.columns],
@@ -148,36 +154,31 @@ def main_page():
             ],
             page_size=10
         ),
-
         html.Div("Click on a ticker to view detailed analysis.",
                  style={'textAlign': 'center', 'marginTop': '10px'}),
     ])
 
-
 def detail_page(ticker_symbol):
     details_df = fetch_detailed_stock_data(ticker_symbol)
-
     return html.Div([
         html.H1(f"Details for {ticker_symbol}", style={'textAlign': 'center', 'color': '#007BFF'}),
-
         html.Label("Timeframe:"),
         dcc.Dropdown(
             id='timeframe-dropdown',
             options=[
-        {'label': '1 Second', 'value': '1s'},
-        {'label': '1 Minute', 'value': '1m'},
-        {'label': '5 Minutes', 'value': '5m'},
-        {'label': '30 Minutes', 'value': '30m'},
-        {'label': '1 Hour', 'value': '1h'},
-        {'label': '1 Day', 'value': '1d'},
-        {'label': '5 Days', 'value': '5d'},
-        {'label': '1 Week', 'value': '1wk'},
-        {'label': '1 Month', 'value': '1mo'},
-    ],
+                {'label': '1 Second', 'value': '1s'},
+                {'label': '1 Minute', 'value': '1m'},
+                {'label': '5 Minutes', 'value': '5m'},
+                {'label': '30 Minutes', 'value': '30m'},
+                {'label': '1 Hour', 'value': '1h'},
+                {'label': '1 Day', 'value': '1d'},
+                {'label': '5 Days', 'value': '5d'},
+                {'label': '1 Week', 'value': '1wk'},
+                {'label': '1 Month', 'value': '1mo'},
+            ],
             value='1d',
             style={'width': '50%', 'marginBottom': '20px'}
         ),
-
         html.Label("Select SMAs to display:"),
         dcc.Checklist(
             id='sma-options',
@@ -189,14 +190,9 @@ def detail_page(ticker_symbol):
             value=['SMA20', 'SMA50'],  
             style={'marginBottom': '20px'}
         ),
-
         dcc.Graph(id='candlestick-chart'),
-
-  
         html.H3("Volume", style={'textAlign': 'center'}),
         dcc.Graph(id='volume-chart'),
-
-
         html.H3("Stock Metrics", style={'textAlign': 'center'}),
         dash_table.DataTable(
             columns=[{"name": col, "id": col} for col in details_df.columns],
@@ -205,73 +201,70 @@ def detail_page(ticker_symbol):
             style_cell={'textAlign': 'left', 'padding': '5px'},
             style_header={'backgroundColor': '#f4f4f4', 'fontWeight': 'bold'},
         ),
-
-        # Link back to the main page
         dcc.Link('Back to Main Page', href='/', 
                  style={'textAlign': 'center', 'fontSize': '20px', 'color': '#007BFF'})
     ])
 
+# ------------------------------
+# CALLBACKS
+# ------------------------------
 
+# Callback to update the data store.
+# This callback triggers either on refresh-button click or when the interval ticks.
+@app.callback(
+    Output('finviz-data-store', 'data'),
+    [Input('refresh-interval', 'n_intervals'),
+     Input('refresh-button', 'n_clicks')]
+)
+def update_store(n_intervals, n_clicks):
+    df = fetch_finviz_data()
+    return df.to_dict('records')
+
+# Callback to update the table from stored data, and adjust the dcc.Interval timing.
 @app.callback(
     [Output('main-table', 'data'),
      Output('refresh-interval', 'interval')],
-    [Input('refresh-button', 'n_clicks'),
+    [Input('finviz-data-store', 'data'),
      Input('refresh-interval-radio', 'value'),
      Input('sort-by-dropdown', 'value'),
-     Input('sort-order', 'value')],
-    prevent_initial_call=True
+     Input('sort-order', 'value')]
 )
-
-
-def update_main_table(n_clicks, refresh_value, sort_by, sort_order):
-    print(f"Refresh triggered! Button Clicks: {n_clicks}, Auto-refresh Interval: {refresh_value}s") 
-    if refresh_value == 0:  
-        interval = 0
-    else:
-        interval = refresh_value * 1000  
-    df = fetch_finviz_data()
+def update_main_table(store_data, refresh_value, sort_by, sort_order):
+    if store_data is None:
+        # If the store has no data yet, prevent update.
+        raise dash.exceptions.PreventUpdate
+    df = pd.DataFrame(store_data)
     ascending = (sort_order == 'asc')
     df = df.sort_values(by=sort_by, ascending=ascending)
+    # Convert seconds to milliseconds for dcc.Interval.
+    interval = 0 if refresh_value == 0 else refresh_value * 1000  
     return df.to_dict('records'), interval
 
-
+# Callback to navigate to the detail page when a ticker is clicked.
 @app.callback(
     Output('url', 'pathname'),
     [Input('main-table', 'active_cell')],
     [dash.dependencies.State('main-table', 'data')]
 )
 def navigate_to_ticker(active_cell, table_data):
-    """
-    Navigate to the detail page for the selected ticker when clicked in the main table.
-    """
     if active_cell:
         row = active_cell['row']
-        ticker_symbol = table_data[row]['Ticker'] 
-        return f'/ticker/{ticker_symbol}' 
+        ticker_symbol = table_data[row]['Ticker']
+        return f'/ticker/{ticker_symbol}'
     return '/'
+
+# Callback for updating charts on the detail page.
 @app.callback(
-    [Output('candlestick-chart', 'figure'), Output('volume-chart', 'figure')],
-    [Input('timeframe-dropdown', 'value')],
-    Input('url', 'pathname')
+    [Output('candlestick-chart', 'figure'),
+     Output('volume-chart', 'figure')],
+    [Input('timeframe-dropdown', 'value'),
+     Input('sma-options', 'value'),
+     Input('url', 'pathname')]
 )
-def update_detail_page(timeframe, pathname):
+def update_detail_page(timeframe, sma_options, pathname):
     if pathname.startswith('/ticker/'):
         ticker_symbol = pathname.split('/')[2]
-        historical_data = fetch_finviz_historical_data(ticker_symbol)
-
-        print(f"🔍 Debugging Data for {ticker_symbol}:")
-        print(historical_data.head())  # Print the first few rows
-
-       
-        if historical_data.empty:
-            print(f"⚠️ No historical data available for {ticker_symbol}")
-            return go.Figure(), go.Figure()
-
-        required_columns = ["Date", "Open", "High", "Low", "Close", "Volume"]
-        if not all(col in historical_data.columns for col in required_columns):
-            print(f"⚠️ Missing required columns in data: {historical_data.columns}")
-            return go.Figure(), go.Figure()
-
+        historical_data = fetch_historical_data(ticker_symbol, timeframe)
         candlestick_chart = go.Figure()
         candlestick_chart.add_trace(go.Candlestick(
             x=historical_data['Date'],
@@ -281,24 +274,24 @@ def update_detail_page(timeframe, pathname):
             close=historical_data['Close'],
             name='Candlestick'
         ))
-
+        for sma in sma_options:
+            candlestick_chart.add_trace(go.Scatter(
+                x=historical_data['Date'], y=historical_data[sma],
+                mode='lines', name=sma
+            ))
         volume_chart = go.Figure()
         volume_chart.add_trace(go.Bar(
             x=historical_data['Date'], y=historical_data['Volume'],
             name='Volume'
         ))
-
         return candlestick_chart, volume_chart
-    
-    return go.Figure(), go.Figure()
+    return {}, {}
 
+# Callback to control which page is displayed.
 @app.callback(
     Output('page-content', 'children'),
     Input('url', 'pathname')
 )
-
-
-
 def display_page(pathname):
     if pathname == '/' or pathname is None:
         return main_page()
