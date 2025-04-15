@@ -1,101 +1,234 @@
 import dash
 from dash import dcc, html, Input, Output, dash_table
 import pandas as pd
-import yfinance as yf
+import requests
+from io import StringIO
+from flask_caching import Cache
 import plotly.graph_objs as go
+import time
+import random
 
-# Initialize Dash app
 app = dash.Dash(__name__, suppress_callback_exceptions=True)
+cache = Cache(app.server, config={'CACHE_TYPE': 'SimpleCache', 'CACHE_DEFAULT_TIMEOUT': 3600})  # 1-hour cache
 
-# Global list of tickers
-tickers = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NFLX', 'NVDA', 'JPM']
+# Your auth token
+auth_token = "1f9c8de8-a39e-45c4-9c3d-1f60fa19fe26"
 
-# Timeframe options for detailed page
-timeframes = [
-    {'label': '1 Minute', 'value': '1m'},
-    {'label': '5 Minutes', 'value': '5m'},
-    {'label': '15 Minutes', 'value': '15m'},
-    {'label': '30 Minutes', 'value': '30m'},
-    {'label': '1 Hour', 'value': '1h'},
-    {'label': '1 Day', 'value': '1d'},
-    {'label': '1 Week', 'value': '1wk'},
-    {'label': '1 Month', 'value': '1mo'}
-]
-# Fetch detailed stock data
-def fetch_detailed_stock_data(ticker):
-    stock = yf.Ticker(ticker)
-    data = {
-        "Index": stock.info.get("index", "N/A"),
-        "Market Cap": stock.info.get("marketCap", "N/A"),
-        "P/E": stock.info.get("trailingPE", "N/A"),
-        "Forward P/E": stock.info.get("forwardPE", "N/A"),
-        "EPS (ttm)": stock.info.get("trailingEps", "N/A"),
-        "EPS (next Y)": stock.info.get("forwardEps", "N/A"),
-        "EPS Growth": stock.info.get("earningsGrowth", "N/A"),
-        "Revenue": stock.info.get("totalRevenue", "N/A"),
-        "Operating Margin": stock.info.get("operatingMargins", "N/A"),
-        "ROE": stock.info.get("returnOnEquity", "N/A"),
-        "Debt/Equity": stock.info.get("debtToEquity", "N/A"),
-        "Beta": stock.info.get("beta", "N/A"),
-        "Volume": stock.info.get("regularMarketVolume", "N/A"),
-        "52 Week High": stock.info.get("fiftyTwoWeekHigh", "N/A"),
-        "52 Week Low": stock.info.get("fiftyTwoWeekLow", "N/A"),
-        "Target Price": stock.info.get("targetMeanPrice", "N/A")
-    }
-    return pd.DataFrame(data.items(), columns=["Metric", "Value"])
-# Function to fetch main page data
-def fetch_main_page_data():
-    data = []
-    for ticker in tickers:
-        stock = yf.Ticker(ticker)
-        hist = stock.history(period="1d", interval="1d")
+# Headers for requests
+headers = {
+    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                  "AppleWebKit/537.36 (KHTML, like Gecko) "
+                  "Chrome/91.0.4472.124 Safari/537.36")
+}
 
-        if not hist.empty:
-            last_close = hist['Close'].iloc[-1]
-            last_open = hist['Open'].iloc[-1]
-            change_percent = ((last_close - last_open) / last_open) * 100
+# Simple rate limiter for API calls
+def rate_limit_api_call():
+    time.sleep(random.uniform(0.5, 1.5))  # Simple delay between calls
+
+@cache.memoize(timeout=3600)  # Cache for 1 hour
+def fetch_finviz_data():
+    """Fetch the main screener data from Finviz Elite"""
+    # Try multiple views to see which has the most data
+    views_to_try = [
+        ("152", "Custom"),
+        ("171", "Technical+"),
+        ("161", "Technical"),
+        ("141", "Overview+")
+    ]
+    
+    best_df = None
+    best_view = None
+    max_columns = 0
+    
+    for view_id, view_name in views_to_try:
+        finviz_url = f"https://elite.finviz.com/export.ashx?v={view_id}&auth={auth_token}"
+        
+        rate_limit_api_call()
+        response = requests.get(finviz_url, headers=headers)
+        print(f"Trying {view_name} view (ID: {view_id})... Status: {response.status_code}")
+        
+        if response.status_code == 200:
+            try:
+                df = pd.read_csv(StringIO(response.text))
+                num_columns = len(df.columns)
+                print(f"  - {view_name} view has {num_columns} columns")
+                
+                if num_columns > max_columns:
+                    max_columns = num_columns
+                    best_df = df
+                    best_view = view_name
+            except Exception as e:
+                print(f"  - Error parsing {view_name} view: {e}")
         else:
-            change_percent = 0.0
+            print(f"  - Failed to fetch {view_name} view. Status code: {response.status_code}")
+    
+    if best_df is None:
+        print("Could not fetch data from any view")
+        return pd.DataFrame({"Error": ["Failed to fetch data from Finviz"]})
+    
+    print(f"Using {best_view} view with {max_columns} columns")
+    
+    try:
+        df = best_df
+        df.columns = df.columns.map(str)
+        
+        # Print column names for debugging
+        all_columns = df.columns.tolist()
+        print("\nAll available columns:", all_columns)
+        
+        # Look for change/performance columns
+        change_columns = [col for col in all_columns if any(term in col.lower() for term in 
+                          ['change', 'perf', 'chg', '%'])]
+        print("\nPotential change/performance columns:", change_columns)
+        
+        # Process the 'Change' column if it exists
+        if 'Change' in df.columns:
+            df['Change'] = pd.to_numeric(df['Change'].replace('%', '', regex=True), errors='coerce')
+            if df['Change'].max() < 1:
+                df['Change'] = df['Change'] * 100
+            df['Change'] = df['Change'].round(2)
+            
+            # Copy to Change 1d if not present
+            if 'Change 1d' not in df.columns:
+                df['Change 1d'] = df['Change']
+       
+        # Convert other relevant columns to numeric
+        numeric_columns = [
+            'Market Cap', 'P/E', 'Forward P/E', 'EPS (ttm)', 'EPS (next Y)', 
+            'EPS Growth', 'Revenue', 'Operating Margin', 'ROE', 'Debt/Equity', 'Beta'
+        ]
+        for col in numeric_columns:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+                
+        # Map performance columns to our standardized names
+        column_mapping = {
+            'Perf Week': 'Change 1w',
+            'Perf Month': 'Change 1mo',
+            'Perf Quart': 'Change 3mo',
+            'Perf Half Y': 'Change 6mo',
+            'Perf Year': 'Change 1y',
+            'Perf YTD': 'Change YTD',
+            # Alternative column names
+            'Change (W)': 'Change 1w',
+            'Change (M)': 'Change 1mo',
+            'W Change': 'Change 1w',
+            'M Change': 'Change 1mo',
+            'Q Change': 'Change 3mo',
+            'Y Change': 'Change 1y'
+        }
+        
+        # Try to find intraday columns (1min, 1hour)
+        intraday_mappings = {
+            '1 Min Chg': 'Change 1m',
+            'Min Chg': 'Change 1m',
+            '1 Hour Chg': 'Change 1h',
+            'Hour Chg': 'Change 1h',
+            'Perf 1 Min': 'Change 1m',
+            'Perf 1 Hour': 'Change 1h',
+            'Change 1Min': 'Change 1m',
+            'Change 1Hour': 'Change 1h'
+        }
+        
+        # Add intraday mappings to column_mapping
+        column_mapping.update(intraday_mappings)
+        
+        # Rename columns to our standardized format
+        renamed_cols = {}
+        for old_col, new_col in column_mapping.items():
+            if old_col in df.columns:
+                renamed_cols[old_col] = new_col
+        
+        df = df.rename(columns=renamed_cols)
+        
+        # Process all performance/change columns
+        all_change_cols = [col for col in df.columns if 'Change' in col]
+        for col in all_change_cols:
+            if col in df.columns:
+                try:
+                    df[col] = pd.to_numeric(df[col].astype(str).str.replace('%', ''), errors='coerce')
+                    if abs(df[col].max()) < 1:
+                        df[col] = df[col] * 100
+                    df[col] = df[col].round(2)
+                except:
+                    print(f"Could not process column {col}")
+        
+        # Print final standardized columns
+        final_columns = df.columns.tolist()
+        print("\nFinal standardized columns:", final_columns)
+        
+        # Check which change columns we have data for
+        change_cols = [col for col in final_columns if 'Change' in col]
+        for col in change_cols:
+            non_null_count = df[col].count()
+            total_count = len(df)
+            print(f"Column {col}: {non_null_count}/{total_count} non-null values ({non_null_count/total_count:.1%})")
 
-        data.append({
-            "Ticker": ticker,
-            "Company": stock.info.get("longName", "N/A"),
-            "Sector": stock.info.get("sector", "N/A"),
-            "Industry": stock.info.get("industry", "N/A"),
-            "Market Cap": stock.info.get("marketCap", "N/A"),
-            "Change (%)": f"{change_percent:.2f}%",
-            "Volume": f"{stock.info.get('regularMarketVolume', 'N/A'):,}" if stock.info.get("regularMarketVolume") else "N/A"
-        })
-    return pd.DataFrame(data)
+        return df
+    except Exception as e:
+        print(f"Error processing data: {e}")
+        return pd.DataFrame({"Error": ["Failed to process data from Finviz"]})
 
-# Function to fetch historical data for the detailed page
-def fetch_historical_data(ticker, interval):
-    if interval in ['1m', '5m', '15m', '30m', '1h']:
-        period = '7d'
-    else:
-        period = '6mo'
-
-    stock = yf.Ticker(ticker)
-    df = stock.history(period=period, interval=interval)
-    df.reset_index(inplace=True)
-    df['SMA20'] = df['Close'].rolling(window=20).mean()
-    df['SMA50'] = df['Close'].rolling(window=50).mean()
-    df['SMA200'] = df['Close'].rolling(window=200).mean()
-    return df
-
-# Layout for main page
 def main_page():
-    df = fetch_main_page_data()
+    # Fetch data with real change metrics
+    df = fetch_finviz_data()
+    
+    if df.empty or "Error" in df.columns:
+        return html.Div(
+            "No data available. Please check your Finviz configuration.", 
+            style={'textAlign': 'center', 'color': 'red'}
+        )
+    
+    # Filter out columns that are entirely null
+    available_columns = [col for col in df.columns if not df[col].isna().all()]
+    print("\nColumns with actual data:", available_columns)
+    
+    # Define numeric columns for proper display
+    numeric_columns = [
+        'Market Cap', 'P/E', 'Forward P/E', 'EPS (ttm)', 'EPS (next Y)', 
+        'EPS Growth', 'Revenue', 'Operating Margin', 'ROE', 'Debt/Equity', 'Beta'
+    ]
+    
+    # Add all change columns to numeric columns
+    for col in available_columns:
+        if 'Change' in col:
+            numeric_columns.append(col)
+
     return html.Div([
         html.H1("Stock Screener - Main Page", style={'textAlign': 'center', 'color': '#007BFF'}),
         
-        # Sorting options
+        html.Div([
+            html.Div([
+                html.Label("Search:"),
+                dcc.Input(
+                    id='search-input',
+                    type='text',
+                    placeholder='Type a ticker or company name...',
+                    style={'marginRight': '10px'}
+                )
+            ], style={'display': 'inline-block', 'marginRight': '20px'}),
+            html.Button("Refresh Data", id="refresh-button", n_clicks=0, 
+                        style={'backgroundColor': '#007BFF', 'color': 'white', 
+                               'padding': '10px 20px', 'borderRadius': '5px'}),
+            dcc.RadioItems(
+                id='refresh-interval-radio',
+                options=[
+                    {'label': '10s', 'value': 10},
+                    {'label': '1min', 'value': 60},
+                    {'label': 'off', 'value': 0},
+                ],
+                value=0,
+                labelStyle={'marginRight': '20px'}
+            )
+        ], style={'marginBottom': '20px'}),
+        dcc.Interval(id='refresh-interval', interval=0, n_intervals=0),
+
         html.Div([
             html.Label("Sort By:"),
             dcc.Dropdown(
                 id='sort-by-dropdown',
-                options=[{"label": col, "value": col} for col in df.columns],
-                value='Ticker',
+                options=[{'label': col, 'value': col} for col in available_columns],
+                value='Ticker' if 'Ticker' in available_columns else available_columns[0],
                 style={'width': '45%', 'display': 'inline-block', 'marginRight': '10px'}
             ),
             dcc.RadioItems(
@@ -108,27 +241,16 @@ def main_page():
                 style={'display': 'inline-block'}
             )
         ], style={'marginBottom': '20px'}),
-        
-        # Rows per page
-        html.Div([
-            html.Label("Rows per page:"),
-            dcc.Input(id='rows-per-page', type='number', value=10, min=1, style={'marginRight': '10px'}),
-            html.Label("Page:"),
-            dcc.Input(id='page-number', type='number', value=1, min=1)
-        ], style={'marginBottom': '20px'}),
-        
-        # Add more tickers
-        html.Div([
-            html.Label("Add Ticker:"),
-            dcc.Input(id='new-ticker', type='text', placeholder='Enter ticker', style={'marginRight': '10px'}),
-            html.Button('Add', id='add-ticker-button', n_clicks=0)
-        ], style={'marginBottom': '20px'}),
-        
-        # DataTable
+
+        html.Div(id='processing-status', 
+                 children=f"Data loaded at {time.strftime('%H:%M:%S')}",
+                 style={'textAlign': 'center', 'fontStyle': 'italic', 'marginBottom': '10px'}),
+
         dash_table.DataTable(
             id='main-table',
-            columns=[{"name": col, "id": col} for col in df.columns],
-            data=df.to_dict('records'),
+            columns=[{"name": col, "id": col, "type": "numeric" if col in numeric_columns else "text"} 
+                     for col in available_columns],
+            data=df[available_columns].to_dict('records'),
             style_table={'overflowX': 'auto'},
             style_cell={'textAlign': 'left', 'padding': '5px'},
             style_header={'backgroundColor': '#f4f4f4', 'fontWeight': 'bold'},
@@ -138,164 +260,80 @@ def main_page():
                     'cursor': 'pointer',
                     'color': 'blue',
                     'textDecoration': 'underline',
-                }
+                },
+            ] + [
+                # Dynamically create conditional formatting for all change columns
+                {
+                    'if': {'filter_query': '{' + col + '} > 0', 'column_id': col},
+                    'backgroundColor': 'rgba(144, 238, 144, 0.3)',
+                    'color': 'green'
+                } for col in available_columns if 'Change' in col
+            ] + [
+                {
+                    'if': {'filter_query': '{' + col + '} < 0', 'column_id': col},
+                    'backgroundColor': 'rgba(255, 182, 193, 0.3)',
+                    'color': 'red'
+                } for col in available_columns if 'Change' in col
             ],
-            page_size=10
+            page_size=10,
+            sort_action='native',
+            filter_action='native',  # Enable filtering
         ),
+
+        html.Div("Click on a ticker to view detailed analysis.",
+                 style={'textAlign': 'center', 'marginTop': '10px'}),
         
-        html.Div("Click on a ticker to view detailed analysis.", style={'textAlign': 'center', 'marginTop': '10px'}),
+        # Added section showing which columns are available
+        html.Div([
+            html.H3("Available Data Columns", style={'textAlign': 'center', 'marginTop': '20px'}),
+            html.Div(f"Showing {len(available_columns)} of {len(df.columns)} total columns", 
+                     style={'textAlign': 'center', 'fontStyle': 'italic', 'marginBottom': '10px'}),
+            html.Ul([html.Li(col) for col in available_columns],
+                    style={'columns': '3', 'listStylePosition': 'inside', 'marginLeft': '20px'})
+        ])
     ])
 
-# Layout for detail page
-def detail_page(ticker):
-    details_df = fetch_detailed_stock_data(ticker)
-    return html.Div([
-        html.H1(f"Details for {ticker}", style={'textAlign': 'center', 'color': '#007BFF'}),
-        html.H3("Stock Metrics", style={'textAlign': 'center'}),
-        dash_table.DataTable(
-            columns=[{"name": col, "id": col} for col in details_df.columns],
-            data=details_df.to_dict('records'),
-            style_table={'overflowX': 'auto'},
-            style_cell={'textAlign': 'left', 'padding': '5px'},
-            style_header={'backgroundColor': '#f4f4f4', 'fontWeight': 'bold'},
-        ),
-        # Timeframe Dropdown
-        dcc.Dropdown(
-            id='timeframe-dropdown',
-            options=timeframes,
-            value='1d',
-            style={'marginBottom': '20px'}
-        ),
-
-        # Dashboard options checklist
-        dcc.Checklist(
-            id='dashboard-options',
-            options=[
-                {'label': 'Show Candlestick Chart', 'value': 'candlestick'},
-                {'label': 'Show Volume Chart', 'value': 'volume'},
-                {'label': 'Show SMA20', 'value': 'SMA20'},
-                {'label': 'Show SMA50', 'value': 'SMA50'},
-                {'label': 'Show SMA200', 'value': 'SMA200'},
-            ],
-            value=['candlestick', 'volume'],
-            style={'marginBottom': '20px'}
-        ),
-
-        dcc.Graph(id='stock-chart'),
-        dcc.Graph(id='volume-chart'),
-
-        dcc.Link('Back to Main Page', href='/', style={'textAlign': 'center', 'fontSize': '20px', 'color': '#007BFF'})
-    ])
-
-# Callbacks
 @app.callback(
-    Output('main-table', 'data'),
-    [Input('sort-by-dropdown', 'value'),
-     Input('sort-order', 'value'),
-     Input('rows-per-page', 'value'),
-     Input('page-number', 'value'),
-     Input('add-ticker-button', 'n_clicks')],
-    [dash.dependencies.State('new-ticker', 'value'),
-     dash.dependencies.State('main-table', 'data')]
+    [Output('main-table', 'data'),
+     Output('refresh-interval', 'interval'),
+     Output('processing-status', 'children')],
+    [Input('refresh-button', 'n_clicks'),
+     Input('refresh-interval-radio', 'value'),
+     Input('sort-by-dropdown', 'value'),
+     Input('sort-order', 'value')],
+    prevent_initial_call=True
 )
-def update_main_table(sort_by, sort_order, rows_per_page, page_number, n_clicks, new_ticker, current_data):
-    global tickers
-    df = fetch_main_page_data()
+def update_main_table(n_clicks, refresh_value, sort_by, sort_order):
+    print(f"Refresh triggered! Button Clicks: {n_clicks}, Auto-refresh Interval: {refresh_value}s")
+    
+    interval = refresh_value * 1000 if refresh_value > 0 else 0
+    
+    # Get fresh data
+    df = fetch_finviz_data()
+    
+    # Filter out columns that are entirely null
+    available_columns = [col for col in df.columns if not df[col].isna().all()]
+    
+    # Status message
+    status = f"Data refreshed at {time.strftime('%H:%M:%S')}"
 
-    if n_clicks > 0 and new_ticker and new_ticker.upper() not in tickers:
-        tickers.append(new_ticker.upper())
-        df = fetch_main_page_data()
+    # Sort the data
+    ascending = (sort_order == 'asc')
+    try:
+        if sort_by in df.columns:
+            df = df.sort_values(by=sort_by, ascending=ascending)
+        else:
+            status += f" (Warning: Sort column '{sort_by}' not found)"
+    except Exception as e:
+        print(f"Error sorting data: {e}")
+        status += f" (Sorting error: {e})"
 
-    ascending = sort_order == 'asc'
-    if sort_by in df.columns:
-        df = df.sort_values(by=sort_by, ascending=ascending)
+    return df[available_columns].to_dict('records'), interval, status
 
-    start_row = (page_number - 1) * rows_per_page
-    end_row = start_row + rows_per_page
-    df = df.iloc[start_row:end_row]
-
-    return df.to_dict('records')
-
-@app.callback(
-    [Output('stock-chart', 'figure'),
-     Output('volume-chart', 'figure')],
-    [Input('dashboard-options', 'value'),
-     Input('timeframe-dropdown', 'value'),
-     Input('url', 'pathname')]
-)
-def update_dashboard(selected_options, selected_timeframe, pathname):
-    if pathname.startswith('/ticker/'):
-        ticker = pathname.split('/')[2]
-        historical_data = fetch_historical_data(ticker, interval=selected_timeframe)
-
-        candlestick_chart = go.Figure()
-        if 'candlestick' in selected_options:
-            candlestick_chart.add_trace(go.Candlestick(
-                x=historical_data['Date'],
-                open=historical_data['Open'],
-                high=historical_data['High'],
-                low=historical_data['Low'],
-                close=historical_data['Close'],
-                name='Candlestick'
-            ))
-
-        if 'SMA20' in selected_options:
-            candlestick_chart.add_trace(go.Scatter(
-                x=historical_data['Date'], y=historical_data['SMA20'],
-                mode='lines', name='SMA20'
-            ))
-        if 'SMA50' in selected_options:
-            candlestick_chart.add_trace(go.Scatter(
-                x=historical_data['Date'], y=historical_data['SMA50'],
-                mode='lines', name='SMA50'
-            ))
-        if 'SMA200' in selected_options:
-            candlestick_chart.add_trace(go.Scatter(
-                x=historical_data['Date'], y=historical_data['SMA200'],
-                mode='lines', name='SMA200'
-            ))
-
-        volume_chart = go.Figure()
-        if 'volume' in selected_options:
-            volume_chart.add_trace(go.Bar(
-                x=historical_data['Date'],
-                y=historical_data['Volume'],
-                name='Volume'
-            ))
-
-        return candlestick_chart, volume_chart
-    return {}, {}
-
-@app.callback(
-    Output('page-content', 'children'),
-    [Input('url', 'pathname')]
-)
-def display_page(pathname):
-    if pathname == '/' or pathname is None:
-        return main_page()
-    elif pathname.startswith('/ticker/'):
-        ticker = pathname.split('/')[2]
-        return detail_page(ticker)
-    else:
-        return html.H1("404: Page Not Found", style={'textAlign': 'center', 'color': 'red'})
-
-@app.callback(
-    Output('url', 'pathname'),
-    [Input('main-table', 'active_cell')],
-    [dash.dependencies.State('main-table', 'data')]
-)
-def navigate_to_ticker(active_cell, table_data):
-    if active_cell:
-        row = active_cell['row']
-        ticker = table_data[row]['Ticker']
-        return f'/ticker/{ticker}'
-    return '/'
-
-# Main app layout
-app.layout = html.Div([
-    dcc.Location(id='url', refresh=False),
-    html.Div(id='page-content')
-])
-
+# For testing
 if __name__ == '__main__':
+    app.layout = html.Div([
+        dcc.Location(id='url', refresh=False),
+        html.Div(id='page-content', children=main_page())
+    ])
     app.run_server(debug=True)

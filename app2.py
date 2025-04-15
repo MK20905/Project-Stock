@@ -14,7 +14,7 @@ app = dash.Dash(__name__, suppress_callback_exceptions=True)
 cache = Cache(app.server, config={'CACHE_TYPE': 'SimpleCache', 'CACHE_DEFAULT_TIMEOUT': 600})
 
 
-finviz_url = "https://elite.finviz.com/export.ashx?v=111&f=allYourFilters&auth=784de70f-dc27-4d2b-a5ce-adad138ec0c3"
+finviz_url = "https://elite.finviz.com/export.ashx?v=111&f=allYourFilters&auth=96754764-5a72-49a5-8320-f6926f5ed3e6"
 
 
 @cache.memoize(timeout=600) 
@@ -251,7 +251,8 @@ def update_main_table(n_clicks, refresh_value, sort_by, sort_order):
     ascending = (sort_order == 'asc')
     df = df.sort_values(by=sort_by, ascending=ascending)
 
-    return df.to_dict('records'), interval
+    
+
 @app.callback(
     Output('url', 'pathname'),
     [Input('main-table', 'active_cell')],

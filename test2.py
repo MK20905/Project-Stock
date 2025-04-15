@@ -8,16 +8,15 @@ import plotly.graph_objs as go
 import yfinance as yf
 
 app = dash.Dash(__name__, suppress_callback_exceptions=True)
-
-# Set up server-side cache for API calls (if needed)
 cache = Cache(app.server, config={'CACHE_TYPE': 'SimpleCache', 'CACHE_DEFAULT_TIMEOUT': 600})
 
-finviz_url = "https://elite.finviz.com/export.ashx?v=111&f=allYourFilters&auth=784de70f-dc27-4d2b-a5ce-adad138ec0c3"
-
-@cache.memoize(timeout=600) 
+finviz_url = "https://elite.finviz.com/export.ashx?v=111&f=allYourFilters&auth=e8cfa282-9be3-4ce5-aad3-0127e25aaaf8"
+@cache.memoize(timeout=600)
 def fetch_finviz_data():
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                       "AppleWebKit/537.36 (KHTML, like Gecko) "
+                       "Chrome/91.0.4472.124 Safari/537.36")
     }
     response = requests.get(finviz_url, headers=headers)
     print(f"Fetching new data from Finviz... Status: {response.status_code}")  
@@ -25,7 +24,23 @@ def fetch_finviz_data():
     if response.status_code == 200:
         try:
             df = pd.read_csv(StringIO(response.text))
-            df.columns = df.columns.map(str)  # Ensure all column names are strings
+            df.columns = df.columns.map(str)
+            if 'Change' in df.columns:
+                df['Change'] = pd.to_numeric(df['Change'].replace('%', '', regex=True), errors='coerce')
+                if df['Change'].max() < 1:
+                    df['Change'] = df['Change'] * 100
+                df['Change'] = df['Change'].round(2)
+           
+            # Convert other relevant columns to numeric
+            numeric_columns = [
+                'Market Cap', 'P/E', 'Forward P/E', 'EPS (ttm)', 'EPS (next Y)', 
+                'EPS Growth', 'Revenue', 'Operating Margin', 'ROE', 'Debt/Equity', 'Beta',
+                'Change 1m', 'Change 3m', 'Change 1d', 'Change 1w', 'Change 1h', 'Change 1mo', 'Change 1y'
+            ]
+            for col in numeric_columns:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+
             print(df.head())  
             return df
         except Exception as e:
@@ -61,61 +76,101 @@ def fetch_detailed_stock_data(ticker_symbol):
     return pd.DataFrame(data.items(), columns=["Metric", "Value"])
 
 def fetch_historical_data(ticker_symbol, interval):
-    # For intraday intervals, use a shorter period
-    if interval in ['1m', '5m', '15m', '30m', '1h']:
-        period = '7d'
-    else:
-        # For daily or higher intervals
-        period = '1y' if interval == '1d' else '5y'
-
+    interval_mapping = {
+        '1m':  ('7d', '1m'),
+        '1d':  ('5y', '1d'),
+        '1w':  ('10y', '1wk'),
+        '1h':  ('5d', '60m'),
+        '1mo': ('2y', '1mo'),
+        '1y':  ('10y', '1mo')
+    }
+    
+    period, yf_interval = interval_mapping.get(interval, ('1y', '1d'))
+    
     stock = yf.Ticker(ticker_symbol)
-    df = stock.history(period=period, interval=interval)
-    
-    # Ensure the Date column is in datetime format (if not already)
+    df = stock.history(period=period, interval=yf_interval)
+    if df.empty:
+        df = stock.history(period='1y', interval='1d')
+
     df.reset_index(inplace=True)
+    if 'Date' not in df.columns:
+        df.rename(columns={df.columns[0]: 'Date'}, inplace=True)
+
+    df['Change %'] = ((df['Close'] - df['Open'].iloc[0]) / df['Open'].iloc[0]) * 100
     
-    # Calculate SMAs if there is enough data
     if not df.empty:
         df['SMA20'] = df['Close'].rolling(window=20).mean()
         df['SMA50'] = df['Close'].rolling(window=50).mean()
         df['SMA200'] = df['Close'].rolling(window=200).mean()
-    
+
     return df
 
+def calculate_overall_change(ticker_symbol, interval):
+    hist_df = fetch_historical_data(ticker_symbol, interval)
+    if hist_df.empty or len(hist_df) < 1:
+        return None
+    overall_change = ((hist_df['Close'].iloc[-1] - hist_df['Open'].iloc[0]) /
+                      hist_df['Open'].iloc[0]) * 100
+    return round(overall_change, 2)
 
 def main_page():
-    # The initial data is loaded into the store (client side) so we can use it immediately
     df = fetch_finviz_data()
     if df.empty or "Error" in df.columns:
-        return html.Div("No data available. Please check your Finviz configuration.", 
-                        style={'textAlign': 'center', 'color': 'red'})
+        return html.Div(
+            "No data available. Please check your Finviz configuration.", 
+            style={'textAlign': 'center', 'color': 'red'}
+        )
+
+    # Define the timeframes for overall change calculation
+    timeframes = ['1m', '1d', '1w', '1h', '1mo', '1y']
+    
+    # For testing, limit to the first 2 rows of the dataframe.
+    for idx, row in df.head(20).iterrows():
+        ticker = row.get('Ticker')
+        if pd.isna(ticker):
+            continue
+        for tf in timeframes:
+            try:
+                change_val = calculate_overall_change(ticker, tf)
+                df.at[idx, f'Change {tf}'] = change_val
+            except Exception as e:
+                print(f"Error calculating overall change for {ticker} on {tf}: {e}")
+                df.at[idx, f'Change {tf}'] = None
+
+    numeric_columns = [
+        'Market Cap', 'P/E', 'Forward P/E', 'EPS (ttm)', 'EPS (next Y)', 
+        'EPS Growth', 'Revenue', 'Operating Margin', 'ROE', 'Debt/Equity', 'Beta', 
+        'Change', 'Change 1m', 'Change 3m', 'Change 1d', 'Change 1w', 'Change 1h', 'Change 1mo', 'Change 1y'
+    ]
+
     return html.Div([
         html.H1("Stock Screener - Main Page", style={'textAlign': 'center', 'color': '#007BFF'}),
         
-        # Refresh controls and refresh interval radio buttons
         html.Div([
-            html.Button("Refresh Data", id="refresh-button", n_clicks=0, style={
-                'backgroundColor': '#007BFF', 'color': 'white', 'padding': '10px 20px', 'borderRadius': '5px'
-            }),
+            html.Div([
+                html.Label("Search:"),
+                dcc.Input(
+                    id='search-input',
+                    type='text',
+                    placeholder='Type a ticker or company name...',
+                    style={'marginRight': '10px'}
+                )
+            ], style={'display': 'inline-block', 'marginRight': '20px'}),
+            html.Button("Refresh Data", id="refresh-button", n_clicks=0, 
+                        style={'backgroundColor': '#007BFF', 'color': 'white', 
+                               'padding': '10px 20px', 'borderRadius': '5px'}),
             dcc.RadioItems(
                 id='refresh-interval-radio',
                 options=[
                     {'label': '10s', 'value': 10},
                     {'label': '1min', 'value': 60},
-                    {'label': '3min', 'value': 180},  # 3 minutes in seconds
-                    {'label': '5min', 'value': 300},  # 5 minutes in seconds
                     {'label': 'off', 'value': 0},
                 ],
-                value=0, 
+                value=0,
                 labelStyle={'marginRight': '20px'}
             )
-        ], style={'display': 'flex', 'alignItems': 'center', 'marginBottom': '20px'}),
-        
-        # dcc.Interval to trigger store updates. Its interval is controlled via a callback.
+        ], style={'marginBottom': '20px'}),
         dcc.Interval(id='refresh-interval', interval=0, n_intervals=0),
-
-        # dcc.Store holds our Finviz data
-        dcc.Store(id='finviz-data-store'),
 
         html.Div([
             html.Label("Sort By:"),
@@ -136,10 +191,9 @@ def main_page():
             )
         ], style={'marginBottom': '20px'}),
 
-        # Main table that will be updated from the stored data
         dash_table.DataTable(
             id='main-table',
-            columns=[{"name": col, "id": col} for col in df.columns],
+            columns=[{"name": col, "id": col, "type": "numeric" if col in numeric_columns else "text"} for col in df.columns],
             data=df.to_dict('records'),
             style_table={'overflowX': 'auto'},
             style_cell={'textAlign': 'left', 'padding': '5px'},
@@ -150,10 +204,20 @@ def main_page():
                     'cursor': 'pointer',
                     'color': 'blue',
                     'textDecoration': 'underline',
+                },
+                {
+                    'if': {'filter_query': '{Change} > 50'},
+                    'backgroundColor': '#90EE90',
+                },
+                {
+                    'if': {'filter_query': '{Change} < -50'},
+                    'backgroundColor': '#FFB6C1',
                 }
             ],
-            page_size=10
+            page_size=10,
+            sort_action='native',
         ),
+
         html.Div("Click on a ticker to view detailed analysis.",
                  style={'textAlign': 'center', 'marginTop': '10px'}),
     ])
@@ -166,17 +230,15 @@ def detail_page(ticker_symbol):
         dcc.Dropdown(
             id='timeframe-dropdown',
             options=[
-                {'label': '1 Second', 'value': '1s'},
                 {'label': '1 Minute', 'value': '1m'},
-                {'label': '5 Minutes', 'value': '5m'},
-                {'label': '30 Minutes', 'value': '30m'},
+        
                 {'label': '1 Hour', 'value': '1h'},
                 {'label': '1 Day', 'value': '1d'},
-                {'label': '5 Days', 'value': '5d'},
-                {'label': '1 Week', 'value': '1wk'},
+                {'label': '1 Week', 'value': '1w'},
                 {'label': '1 Month', 'value': '1mo'},
+                {'label': '1 Year', 'value': '1y'}
             ],
-            value='1d',
+            value='1m',
             style={'width': '50%', 'marginBottom': '20px'}
         ),
         html.Label("Select SMAs to display:"),
@@ -187,7 +249,7 @@ def detail_page(ticker_symbol):
                 {'label': 'SMA50', 'value': 'SMA50'},
                 {'label': 'SMA200', 'value': 'SMA200'}
             ],
-            value=['SMA20', 'SMA50'],  
+            value=['SMA20', 'SMA50'],
             style={'marginBottom': '20px'}
         ),
         dcc.Graph(id='candlestick-chart'),
@@ -205,42 +267,47 @@ def detail_page(ticker_symbol):
                  style={'textAlign': 'center', 'fontSize': '20px', 'color': '#007BFF'})
     ])
 
-# ------------------------------
-# CALLBACKS
-# ------------------------------
-
-# Callback to update the data store.
-# This callback triggers either on refresh-button click or when the interval ticks.
-@app.callback(
-    Output('finviz-data-store', 'data'),
-    [Input('refresh-interval', 'n_intervals'),
-     Input('refresh-button', 'n_clicks')]
-)
-def update_store(n_intervals, n_clicks):
-    df = fetch_finviz_data()
-    return df.to_dict('records')
-
-# Callback to update the table from stored data, and adjust the dcc.Interval timing.
 @app.callback(
     [Output('main-table', 'data'),
      Output('refresh-interval', 'interval')],
-    [Input('finviz-data-store', 'data'),
+    [Input('refresh-button', 'n_clicks'),
      Input('refresh-interval-radio', 'value'),
      Input('sort-by-dropdown', 'value'),
-     Input('sort-order', 'value')]
+     Input('sort-order', 'value')],
+    prevent_initial_call=True
 )
-def update_main_table(store_data, refresh_value, sort_by, sort_order):
-    if store_data is None:
-        # If the store has no data yet, prevent update.
-        raise dash.exceptions.PreventUpdate
-    df = pd.DataFrame(store_data)
+def update_main_table(n_clicks, refresh_value, sort_by, sort_order):
+    print(f"Refresh triggered! Button Clicks: {n_clicks}, Auto-refresh Interval: {refresh_value}s")
+    
+    interval = refresh_value * 1000 if refresh_value > 0 else 0
+    df = fetch_finviz_data()
+
+    # Calculate overall changes for only the first 2 rows for testing.
+    timeframes = ['1m', '1d', '1w', '1h', '1mo', '1y']
+    for idx, row in df.head(20).iterrows():
+        ticker = row.get('Ticker')
+        if pd.isna(ticker):
+            continue
+        for tf in timeframes:
+            try:
+                change_val = calculate_overall_change(ticker, tf)
+                df.at[idx, f'Change {tf}'] = change_val
+            except Exception as e:
+                print(f"Error calculating overall change for {ticker} on {tf}: {e}")
+                df.at[idx, f'Change {tf}'] = None
+
     ascending = (sort_order == 'asc')
-    df = df.sort_values(by=sort_by, ascending=ascending)
-    # Convert seconds to milliseconds for dcc.Interval.
-    interval = 0 if refresh_value == 0 else refresh_value * 1000  
+    time_intervals = ['Change 1m', 'Change 3m', 'Change 1d', 'Change 1w', 'Change 1h', 'Change 1mo', 'Change 1y']
+
+    if sort_by in time_intervals:
+        df['Change_numeric'] = pd.to_numeric(df[sort_by].astype(str).str.replace('%', ''), errors='coerce')
+        df = df.sort_values(by='Change_numeric', ascending=ascending)
+        df.drop(columns=['Change_numeric'], inplace=True)
+    else:
+        df = df.sort_values(by=sort_by, ascending=ascending)
+
     return df.to_dict('records'), interval
 
-# Callback to navigate to the detail page when a ticker is clicked.
 @app.callback(
     Output('url', 'pathname'),
     [Input('main-table', 'active_cell')],
@@ -253,18 +320,34 @@ def navigate_to_ticker(active_cell, table_data):
         return f'/ticker/{ticker_symbol}'
     return '/'
 
-# Callback for updating charts on the detail page.
 @app.callback(
-    [Output('candlestick-chart', 'figure'),
-     Output('volume-chart', 'figure')],
-    [Input('timeframe-dropdown', 'value'),
-     Input('sma-options', 'value'),
-     Input('url', 'pathname')]
+    [Output('candlestick-chart', 'figure'), Output('volume-chart', 'figure')],
+    [Input('timeframe-dropdown', 'value'), Input('sma-options', 'value')],
+    Input('url', 'pathname')
 )
 def update_detail_page(timeframe, sma_options, pathname):
     if pathname.startswith('/ticker/'):
         ticker_symbol = pathname.split('/')[2]
         historical_data = fetch_historical_data(ticker_symbol, timeframe)
+
+        if not historical_data.empty:
+            historical_data['Candle Change %'] = (
+                (historical_data['Close'] - historical_data['Open']) /
+                historical_data['Open']
+            ) * 100
+
+        hover_text = []
+        for _, row in historical_data.iterrows():
+            hover_text.append(
+                f"Date: {row['Date']}<br>"
+                f"Open: {row['Open']:.2f}<br>"
+                f"High: {row['High']:.2f}<br>"
+                f"Low: {row['Low']:.2f}<br>"
+                f"Close: {row['Close']:.2f}<br>"
+                f"Volume: {row['Volume']}<br>"
+                f"Change: {row['Candle Change %']:.2f}%"
+            )
+
         candlestick_chart = go.Figure()
         candlestick_chart.add_trace(go.Candlestick(
             x=historical_data['Date'],
@@ -272,22 +355,42 @@ def update_detail_page(timeframe, sma_options, pathname):
             high=historical_data['High'],
             low=historical_data['Low'],
             close=historical_data['Close'],
-            name='Candlestick'
+            name='Candlestick',
+            text=hover_text,
+            hoverinfo='text'
         ))
+
+        if not historical_data.empty and len(historical_data) > 1:
+            overall_change = ((historical_data['Close'].iloc[-1] - historical_data['Open'].iloc[0]) /
+                              historical_data['Open'].iloc[0]) * 100
+            candlestick_chart.add_annotation(
+                x=historical_data['Date'].iloc[-1],
+                y=historical_data['High'].max(),
+                text=f"Overall Change: {overall_change:.2f}%",
+                showarrow=True,
+                arrowhead=2,
+                ax=0,
+                ay=-40
+            )
+
         for sma in sma_options:
-            candlestick_chart.add_trace(go.Scatter(
-                x=historical_data['Date'], y=historical_data[sma],
-                mode='lines', name=sma
-            ))
+            if sma in historical_data.columns:
+                candlestick_chart.add_trace(go.Scatter(
+                    x=historical_data['Date'],
+                    y=historical_data[sma],
+                    mode='lines',
+                    name=sma
+                ))
+
         volume_chart = go.Figure()
         volume_chart.add_trace(go.Bar(
-            x=historical_data['Date'], y=historical_data['Volume'],
+            x=historical_data['Date'],
+            y=historical_data['Volume'],
             name='Volume'
         ))
         return candlestick_chart, volume_chart
     return {}, {}
 
-# Callback to control which page is displayed.
 @app.callback(
     Output('page-content', 'children'),
     Input('url', 'pathname')
