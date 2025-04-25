@@ -10,7 +10,7 @@ import yfinance as yf
 app = dash.Dash(__name__, suppress_callback_exceptions=True)
 cache = Cache(app.server, config={'CACHE_TYPE': 'SimpleCache', 'CACHE_DEFAULT_TIMEOUT': 600})
 
-finviz_url = "https://elite.finviz.com/export.ashx?v=111&f=allYourFilters&auth=1f9c8de8-a39e-45c4-9c3d-1f60fa19fe26"
+finviz_url = "https://elite.finviz.com/export.ashx?v=111&f=allYourFilters&auth=f8115e8d-cab5-49a0-aee2-bf3b308582aa"
 @cache.memoize(timeout=600)
 def fetch_finviz_data():
     headers = {
@@ -78,9 +78,9 @@ def fetch_detailed_stock_data(ticker_symbol):
 def fetch_historical_data(ticker_symbol, interval):
     interval_mapping = {
         '1m':  ('7d', '1m'),
-        '1d':  ('5y', '1d'),
-        '1w':  ('10y', '1wk'),
-        '1h':  ('5d', '60m'),
+        '1d':  ('1y', '1d'),
+        '1w':  ('2y', '1wk'),
+        '1h':  ('1y', '60m'),
         '1mo': ('2y', '1mo'),
         '1y':  ('10y', '1mo')
     }
@@ -125,7 +125,7 @@ def main_page():
     timeframes = ['1m', '1d', '1w', '1h', '1mo', '1y']
     
     # For testing, limit to the first 2 rows of the dataframe.
-    for idx, row in df.head(200).iterrows():
+    for idx, row in df.head(20).iterrows():
         ticker = row.get('Ticker')
         if pd.isna(ticker):
             continue
@@ -284,7 +284,7 @@ def update_main_table(n_clicks, refresh_value, sort_by, sort_order):
 
     # Calculate overall changes for only the first 2 rows for testing.
     timeframes = ['1m', '1d', '1w', '1h', '1mo', '1y']
-    for idx, row in df.head(200).iterrows():
+    for idx, row in df.head(20).iterrows():
         ticker = row.get('Ticker')
         if pd.isna(ticker):
             continue
